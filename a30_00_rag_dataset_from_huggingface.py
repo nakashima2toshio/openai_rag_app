@@ -9,117 +9,56 @@
 # --------------------------------------------------
 # Embeddingの前処理：　1行1ベクトルになる形が理想
 # --------------------------------------------------
-# 余計な記号や空白・改行は削除
-# 意味単位で1行ずつ埋め込み（例：FAQなら1QAペアで1ベクトル）
-# 必要なら「質問＋回答」結合
-# 極端に短い or 長いテキストは除外/分割/要約
-# カテゴリやタグなど、後でフィルタしたい情報も一緒に持っておくと便利
-# --------------------------------------------------
-# 観点	            評価
-# 検索自体のヒット	    上位 0.746 のチャンク内に「返品ポリシーを教えてください。」
-#                   →30 日以内で全額返金という正しい回答が含まれており、リコール（再現率）は OK。
-# 精度 (Precision)	返ってきたチャンクが “Q/A を 10 問以上まとめて 1 塊” になっているため、
-#                   ノイズが多く余計な QA も一緒に返っている。
-# スコア分布	        0.746 → 0.676 → 0.636 ときれいに降下しており、ベクトル検索自体は機能している。
-# 次の課題	        ・チャンクが大き過ぎる
-#                   ・回答文だけ抽出してユーザーに返すロジックが無い
-# --------------------------------------------------
 import os
 import re
 import time
+import json
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+import logging
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionSystemMessageParam, \
     ChatCompletionUserMessageParam, ChatCompletionAssistantMessageParam
-from openai.types.vector_store_create_params import ExpiresAfter  # ★追加
 
 from datasets import load_dataset
-import pandas as pd, tempfile, textwrap
+import pandas as pd
+import tempfile
+import textwrap
 from pydantic import BaseModel, Field
 from tqdm import tqdm
 
-from a0_common_helper.helper import (
-    # init_page,
-    # init_messages,
-    # select_model,
-    # sanitize_key,
-    # get_default_messages,
-    create_vector_store_and_upload,
-    standalone_search,
-    extract_text_from_response,
-)
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ヘルパーモジュールをインポート
+try:
+    from helper_st import (
+        UIHelper, MessageManagerUI, ResponseProcessorUI,
+        SessionStateManager, error_handler_ui, timer_ui,
+        init_page, select_model, InfoPanelManager
+    )
+    from helper_api import (
+        config, logger, TokenManager, OpenAIClient,
+        EasyInputMessageParam, ResponseInputTextParam,
+        ConfigManager, MessageManager, sanitize_key,
+        error_handler, timer
+    )
+except ImportError as e:
+    st.error(f"ヘルパーモジュールのインポートに失敗しました: {e}")
+    st.stop()
 
 BASE_DIR = Path(__file__).resolve().parent.parent       # Paslib
 THIS_DIR = Path(__file__).resolve().parent              # Paslib
 
-datasets_to_download = [
-    {
-        "name": "customer_support_faq",
-        "hfpath": "MakTek/Customer_support_faqs_dataset",
-        "config": None,
-        "split": "train",
-    },
-    {
-        "name": "trivia_qa",
-        "hfpath": "trivia_qa",
-        "config": "rc",
-        "split": "train",
-    },
-    {
-        "name": "medical_qa",
-        "hfpath": "FreedomIntelligence/medical-o1-reasoning-SFT",
-        "config": "en",
-        "split": "train",
-    },
-    {
-        "name": "sciq_qa",
-        "hfpath": "sciq",
-        "config": None,
-        "split": "train",
-    },
-    {
-        "name": "legal_qa",
-        "hfpath": "nguha/legalbench",
-        "config": "consumer_contracts_qa",  # ★必須
-        "split": "train",
-    },
-]
-
-
-def download_dataset():
-    DATA_DIR = Path("datasets")
-    DATA_DIR.mkdir(exist_ok=True)
-
-    for d in datasets_to_download:
-        print(f"▼ downloading {d['name']} …")
-        ds = load_dataset(
-            path=d["hfpath"],
-            name=d["config"],
-            split=d["split"],
-        )
-
-        # # Arrow 形式 → data/<name>
-        # arrow_path = DATA_DIR / d["name"]
-        # ds.save_to_disk(arrow_path)
-        # print(f"  saved dataset ➜ {arrow_path}")
-
-        # CSV 形式 → data/<name>.csv
-        csv_path = DATA_DIR / f"{d['name']}.csv"
-        ds.to_pandas().to_csv(csv_path, index=False)
-        print(f"  saved CSV     ➜ {csv_path}")
-
-    print("\n[OK] All datasets downloaded & saved.")
-
 # ----------------------------------------------------
 # 1. Customer Support FAQs/ FAQ型のデータ：
-#    前処理：「Q: … A: …」形式へ変換
 # ----------------------------------------------------
-def set_dataset_to_qa(csv_path):
-    # 「Q: … A: …」形式へ変換し一時ファイルに書き出し
+def clean_customer_support_faq(csv_path):
+    csv_path = os.path.join(DATASETS_DIR, "customer_support_faq.csv")
     df = pd.read_csv(csv_path)
-    print(df.head())
+    print(df.head(10))
 
     tmp_txt = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
     with open(tmp_txt.name, "w", encoding="utf-8") as f:
@@ -212,7 +151,7 @@ def legal_qa_main():
 #    前処理：
 # ----------------------------------------------------
 # ========= パス設定を pathlib.Path で統一 =========
-BASE_DIR = Path(__file__).resolve().parent
+# BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATASETS_DIR = ROOT_DIR / "datasets"
 INPUT_CSV: Path = DATASETS_DIR / "medical_qa.csv"
@@ -425,12 +364,392 @@ def set_dataset_05(csv_path):
     pass
 
 # ----------------------------------------------------
+# ① カスタマーサポート・FAQデータセット   推奨データセット： Amazon_Polarity
+# ----------------------------------------------------
+# データクレンジング処理
+
+def clean_text(text):
+    """
+    テキストのクレンジング処理
+    - 改行の除去
+    - 連続した空白を1個の空白にまとめる
+    """
+    if pd.isna(text):
+        return ""
+
+    # 改行の除去
+    text = re.sub(r'\n+', ' ', str(text))
+
+    # 連続した空白を1個の空白にまとめる
+    text = re.sub(r'\s+', ' ', text)
+
+    # 前後の空白を除去
+    text = text.strip()
+
+    return text
+
+
+def get_embeddings_batch(texts: List[str], model: str = "text-embedding-3-small", batch_size: int = 100) -> List[
+    Optional[List[float]]]:
+    """
+    OpenAI Embedding APIを使用してテキストリストをバッチでベクトル化
+
+    Args:
+        texts: ベクトル化するテキストのリスト
+        model: 使用するembeddingモデル (推奨: text-embedding-3-small)
+        batch_size: 一度のAPI呼び出しで処理するテキスト数（最大2048）
+
+    Returns:
+        埋め込みベクトルのリスト
+    """
+    client = OpenAI()
+    embeddings = []
+
+    # テキストを前処理（改行文字をスペースに置換）
+    cleaned_texts = [text.replace("\n", " ") for text in texts]
+
+    logger.info(f"Embedding作成開始: {len(cleaned_texts)}件のテキストを{batch_size}件ずつ処理")
+
+    # バッチごとに処理
+    for i in tqdm(range(0, len(cleaned_texts), batch_size), desc="Embedding作成中"):
+        batch = cleaned_texts[i:i + batch_size]
+
+        try:
+            response = client.embeddings.create(
+                input=batch,
+                model=model,
+                # dimensions=1024  # コスト効率を重視する場合は次元数を削減
+            )
+
+            # レスポンスからembeddingを取得
+            batch_embeddings = [data.embedding for data in response.data]
+            embeddings.extend(batch_embeddings)
+
+            logger.info(
+                f"バッチ {i // batch_size + 1}/{(len(cleaned_texts) - 1) // batch_size + 1}: {len(batch)}件処理完了")
+
+            # レート制限対応のための短い待機
+            time.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"バッチ {i // batch_size + 1}でエラー: {e}")
+            # エラーが発生した場合はNoneで埋める
+            embeddings.extend([None] * len(batch))
+
+            # 一時的な問題の場合はリトライ
+            time.sleep(2)
+
+    return embeddings
+
+
+def create_vector_store_from_dataframe(df_clean: pd.DataFrame, store_name: str = "Customer Support FAQ") -> Optional[
+    str]:
+    """
+    DataFrameからVector Storeを作成（最新API対応版）
+
+    Args:
+        df_clean: クレンジング済みのDataFrame
+        store_name: Vector Storeの名前
+
+    Returns:
+        Vector Store ID（成功時）またはNone（失敗時）
+    """
+    client = OpenAI()
+    temp_file_path = None
+    uploaded_file_id = None
+
+    try:
+        # 一時ファイルを作成してアップロード用のJSONLファイルを準備
+        # 拡張子を.txtに変更（OpenAI Files APIの制限対応）
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as temp_file:
+            for idx, row in df_clean.iterrows():
+                # JSONL形式でデータを書き込み（拡張子は.txtだが中身はJSONL）
+                json_line = {
+                    "id"  : f"faq_{idx}",
+                    "text": row['combined_text']
+                }
+                temp_file.write(json.dumps(json_line, ensure_ascii=False) + '\n')
+
+            temp_file_path = temp_file.name
+
+        logger.info(f"JSONLファイル作成完了: {temp_file_path}")
+
+        # Step 1: ファイルをOpenAIにアップロード（.txt拡張子でアップロード）
+        with open(temp_file_path, 'rb') as file:
+            uploaded_file = client.files.create(
+                file=file,
+                purpose="assistants"
+            )
+            uploaded_file_id = uploaded_file.id
+
+        logger.info(f"ファイルアップロード完了: File ID={uploaded_file_id}")
+
+        # Step 2: Vector Storeを作成（最新API仕様）
+        vector_store = client.vector_stores.create(
+            name=store_name,
+            expires_after={
+                "anchor": "last_active_at",
+                "days"  : 30
+            },
+            # 最新のチャンク設定
+            chunking_strategy={
+                "type"  : "static",
+                "static": {
+                    "max_chunk_size_tokens": 800,
+                    "chunk_overlap_tokens" : 400
+                }
+            },
+            metadata={
+                "created_by" : "customer_support_faq_processor",
+                "version"    : "2025.1",
+                "data_format": "jsonl_as_txt"
+            }
+        )
+
+        logger.info(f"Vector Store作成完了: ID={vector_store.id}")
+
+        # Step 3: Vector StoreにファイルをLinkする
+        vector_store_file = client.vector_stores.files.create(
+            vector_store_id=vector_store.id,
+            file_id=uploaded_file_id,
+            chunking_strategy={
+                "type"  : "static",
+                "static": {
+                    "max_chunk_size_tokens": 800,
+                    "chunk_overlap_tokens" : 400
+                }
+            }
+        )
+
+        logger.info(f"Vector StoreFileリンク作成: {vector_store_file.id}")
+
+        # Step 4: ファイル処理完了を待機
+        max_wait_time = 300  # 最大5分待機
+        wait_interval = 5  # 5秒間隔でチェック
+        waited_time = 0
+
+        while waited_time < max_wait_time:
+            # ファイルステータスを確認
+            file_status = client.vector_stores.files.retrieve(
+                vector_store_id=vector_store.id,
+                file_id=uploaded_file_id
+            )
+
+            logger.info(f"ファイル処理状況: {file_status.status} (待機時間: {waited_time}秒)")
+
+            if file_status.status == "completed":
+                # Vector Store全体のステータスを確認
+                updated_vector_store = client.vector_stores.retrieve(vector_store.id)
+
+                logger.info(f"✅ Vector Store作成完了:")
+                logger.info(f"  - ID: {vector_store.id}")
+                logger.info(f"  - Name: {vector_store.name}")
+                logger.info(f"  - ファイル処理状況: {file_status.status}")
+                logger.info(f"  - 総ファイル数: {updated_vector_store.file_counts.total}")
+                logger.info(f"  - 完了ファイル数: {updated_vector_store.file_counts.completed}")
+                logger.info(f"  - 失敗ファイル数: {updated_vector_store.file_counts.failed}")
+                logger.info(f"  - ストレージ使用量: {updated_vector_store.usage_bytes} bytes")
+
+                return vector_store.id
+
+            elif file_status.status == "failed":
+                logger.error(f"❌ ファイル処理失敗: {file_status.last_error}")
+                return None
+
+            elif file_status.status in ["in_progress", "cancelling"]:
+                # 処理中の場合は継続して待機
+                time.sleep(wait_interval)
+                waited_time += wait_interval
+            else:
+                logger.warning(f"⚠️ 予期しないステータス: {file_status.status}")
+                time.sleep(wait_interval)
+                waited_time += wait_interval
+
+        # タイムアウトの場合
+        logger.error(f"❌ Vector Store作成タイムアウト (制限時間: {max_wait_time}秒)")
+        return None
+
+    except Exception as e:
+        logger.error(f"Vector Store作成エラー: {e}")
+        logger.error(f"エラータイプ: {type(e).__name__}")
+
+        # 具体的なエラー対応の提案
+        if "authentication" in str(e).lower():
+            logger.error("🔑 APIキーを確認してください。環境変数OPENAI_API_KEYが正しく設定されているか確認。")
+        elif "quota" in str(e).lower() or "limit" in str(e).lower():
+            logger.error("💳 APIクオータまたはレート制限に達しています。料金プランまたは使用量を確認してください。")
+        elif "file" in str(e).lower():
+            logger.error("📁 ファイル関連のエラーです。ファイルサイズやフォーマットを確認してください。")
+        elif "extension" in str(e).lower() or "format" in str(e).lower():
+            logger.error("📄 ファイル拡張子またはフォーマットの問題です。サポートされている形式を確認してください。")
+
+        return None
+
+    finally:
+        # 一時ファイルを削除
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+            logger.info("🗑️ 一時ファイルを削除しました")
+
+        # エラー時にアップロードしたファイルをクリーンアップ（オプション）
+        # 注意: Vector Storeで使用中のファイルは削除しないよう注意
+        # if uploaded_file_id and not vector_store_created:
+        #     try:
+        #         client.files.delete(uploaded_file_id)
+        #         logger.info(f"🗑️ アップロードファイルをクリーンアップ: {uploaded_file_id}")
+        #     except Exception as cleanup_error:
+        #         logger.warning(f"⚠️ ファイルクリーンアップ失敗: {cleanup_error}")
+
+
+def validate_embeddings(df_clean: pd.DataFrame) -> bool:
+    """
+    Embeddingデータの品質を検証
+
+    Args:
+        df_clean: Embedding付きのDataFrame
+
+    Returns:
+        検証結果（True: 正常, False: 問題あり）
+    """
+    if 'embedding' not in df_clean.columns:
+        logger.error("embedding列が存在しません")
+        return False
+
+    null_count = df_clean['embedding'].isnull().sum()
+    total_count = len(df_clean)
+    success_rate = (total_count - null_count) / total_count * 100
+
+    logger.info(f"Embedding品質検証:")
+    logger.info(f"  - 総データ数: {total_count}")
+    logger.info(f"  - 成功数: {total_count - null_count}")
+    logger.info(f"  - 失敗数: {null_count}")
+    logger.info(f"  - 成功率: {success_rate:.1f}%")
+
+    # 成功率が90%未満の場合は警告
+    if success_rate < 90:
+        logger.warning(f"Embedding成功率が{success_rate:.1f}%と低いです。APIキーやネットワーク接続を確認してください。")
+        return False
+
+    return True
+
+# ===
+# ----------------------------------------------------
+# 1. Customer Support FAQs/ FAQ型のデータ：
+# ----------------------------------------------------
+def make_vs_id_customer_support_faq():
+    logger.info("=== OpenAI API最新版 Vector Store作成処理開始 ===")
+
+    # データファイルの読み込み
+    DATASETS_DIR = os.path.join(THIS_DIR, "datasets")
+    csv_path = os.path.join(DATASETS_DIR, "customer_support_faq.csv")
+
+    if not os.path.exists(csv_path):
+        logger.error(f"データファイルが見つかりません: {csv_path}")
+        return
+
+    # CSVファイルの読み込み
+    df = pd.read_csv(csv_path)
+
+    logger.info(f"元データ読み込み完了:")
+    logger.info(f"  - 行数: {len(df)}")
+    logger.info(f"  - 列数: {len(df.columns)}")
+    logger.info(f"  - 列名: {list(df.columns)}")
+
+    # df_cleanを新しく定義（クレンジング処理）
+    logger.info("データクレンジング開始...")
+    df_clean = pd.DataFrame({
+        'combined_text': df.apply(
+            lambda row: clean_text(str(row['question']) + ' ' + str(row['answer'])),
+            axis=1
+        )
+    })
+
+    logger.info(f"クレンジング後のデータ:")
+    logger.info(f"  - 行数: {len(df_clean)}")
+    logger.info(f"  - 列数: {len(df_clean.columns)}")
+    logger.info(f"  - 列名: {list(df_clean.columns)}")
+
+    # 結果の確認用（最初の3行を表示）
+    logger.info("=== 処理結果の確認 ===")
+    for i in range(min(3, len(df_clean))):
+        logger.info(f"【行 {i + 1}】")
+        logger.info(f"  元のquestion: {df.iloc[i]['question'][:100]}...")
+        logger.info(f"  元のanswer: {df.iloc[i]['answer'][:100]}...")
+        logger.info(f"  連結・クレンジング後: {df_clean.iloc[i]['combined_text'][:200]}...")
+
+    # Embeddingの作成（バッチ処理で効率化）
+    logger.info("=== Embedding作成開始 ===")
+    logger.info(f"処理対象: {len(df_clean)}件のテキスト")
+
+    # バッチ処理でembeddingを作成
+    embeddings = get_embeddings_batch(
+        df_clean['combined_text'].tolist(),
+        model='text-embedding-3-small',  # コスト効率重視
+        batch_size=50  # レート制限を考慮して50件ずつ処理
+    )
+
+    # 結果をDataFrameに追加
+    df_clean['embedding'] = embeddings
+
+    # Embedding品質の検証
+    if not validate_embeddings(df_clean):
+        logger.warning("Embeddingの品質に問題があります。処理を続行しますが、結果を確認してください。")
+
+    # 作成したembeddingデータをCSVに保存
+    output_dir = os.path.join(THIS_DIR, "output")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "customer_support_faq_embedded.csv")
+
+    try:
+        # Embeddingデータは文字列として保存（CSVの制限対応）
+        df_save = df_clean.copy()
+        df_save['embedding'] = df_save['embedding'].apply(lambda x: str(x) if x is not None else None)
+        df_save.to_csv(output_path, index=False)
+        logger.info(f"Embeddingデータを保存: {output_path}")
+    except Exception as e:
+        logger.error(f"ファイル保存エラー: {e}")
+
+    # Vector Storeの作成
+    logger.info("=== Vector Store作成開始 ===")
+    vector_store_id = create_vector_store_from_dataframe(df_clean, "Customer Support FAQ v2025")
+
+    if vector_store_id:
+        logger.info(f"🎉 Vector Store作成成功!")
+        logger.info(f"   Vector Store ID: {vector_store_id}")
+        logger.info(f"   このIDを保存して、後でRAG検索に使用してください。")
+
+        # Vector Store IDをファイルに保存
+        id_file_path = os.path.join(output_dir, "vector_store_id.txt")
+        with open(id_file_path, 'w') as f:
+            f.write(vector_store_id)
+        logger.info(f"   Vector Store IDを保存: {id_file_path}")
+
+    else:
+        logger.error("❌ Vector Storeの作成に失敗しました。")
+        logger.error("   エラーログを確認し、APIキーやネットワーク接続を確認してください。")
+
+    # 処理完了サマリー
+    logger.info("=== 処理完了サマリー ===")
+    logger.info(f"✅ 処理済みデータ: {len(df_clean)}件")
+    logger.info(f"✅ 成功したEmbedding: {df_clean['embedding'].notna().sum()}件")
+    logger.info(f"✅ Vector Store: {'作成成功' if vector_store_id else '作成失敗'}")
+
+    # コスト推定
+    total_tokens = sum(len(text.split()) * 1.3 for text in df_clean['combined_text'])  # 概算
+    estimated_cost = total_tokens * 0.00002 / 1000  # text-embedding-3-small料金
+    logger.info(f"💰 推定コスト: 約${estimated_cost:.4f} (概算)")
+
+# 7-16-1: Vector Store ID: vs_68775be00d84819192ecc2b9c1039b89
+
+# ----------------------------------------------------
+# 2. Legal QA — *consumer_contracts_qa
+# 列: Question,Complex_CoT,Response
+# ----------------------------------------------------
 def main():
-    # customer_support_faq_main()
-    # legal_qa_main()
-    # medical_qa_main()
-    # medical_qa_make_vector()
-    medical_qa_search(vs_id)
+    pass
+
 
 if __name__ == "__main__":
     main()
+
+
