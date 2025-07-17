@@ -490,6 +490,11 @@ def setup_sidebar_controls(dataset_type: str = "medical_qa") -> Tuple[bool, bool
 # ==================================================
 # エラーハンドリング付きの処理関数
 # ==================================================
+# 元の関数（スピナーあり）:
+# @error_handler_ui
+# def process_rag_data(df: pd.DataFrame,
+#                      dataset_type: str,
+#                      combine_columns_option: bool = True) -> pd.DataFrame:
 @error_handler_ui
 def process_rag_data(df: pd.DataFrame,
                      dataset_type: str,
@@ -505,24 +510,24 @@ def process_rag_data(df: pd.DataFrame,
     Returns:
         pd.DataFrame: 処理済みDataFrame
     """
-    with st.spinner("前処理中..."):
-        # 基本的な前処理
-        df_processed = additional_preprocessing(df.copy(), dataset_type)
+    # with st.spinner("前処理中..."):  # ← この行を削除
+    # 基本的な前処理
+    df_processed = additional_preprocessing(df.copy(), dataset_type)
 
-        # 各列のクレンジング
-        config_data = RAGConfig.get_config(dataset_type)
-        required_columns = config_data["required_columns"]
+    # 各列のクレンジング
+    config_data = RAGConfig.get_config(dataset_type)
+    required_columns = config_data["required_columns"]
 
-        for col in required_columns:
-            if col in df_processed.columns:
-                df_processed[col] = df_processed[col].apply(clean_text)
+    for col in required_columns:
+        if col in df_processed.columns:
+            df_processed[col] = df_processed[col].apply(clean_text)
 
-        # 列の結合（オプション）
-        if combine_columns_option:
-            df_processed['Combined_Text'] = df_processed.apply(
-                lambda row: combine_columns(row, dataset_type),
-                axis=1
-            )
+    # 列の結合（オプション）
+    if combine_columns_option:
+        df_processed['Combined_Text'] = df_processed.apply(
+            lambda row: combine_columns(row, dataset_type),
+            axis=1
+        )
 
     return df_processed
 

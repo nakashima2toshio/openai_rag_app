@@ -255,35 +255,6 @@ def validate_medical_data_specific(df) -> List[str]:
     return medical_issues
 
 
-def display_medical_specific_info():
-    """医療データ特有の情報を表示"""
-    with st.sidebar.expander("🏥 医療データ特有設定", expanded=False):
-        st.write("**医療データの特徴:**")
-        st.write("- 専門用語の多用")
-        st.write("- 詳細な説明文")
-        st.write("- 正確性が重要")
-
-        st.write("**前処理の注意点:**")
-        st.write("- 医療用語の保持")
-        st.write("- 文脈の保持")
-        st.write("- 略語の展開")
-
-        # 医療データ処理のオプション
-        preserve_medical_terms = st.checkbox(
-            "医療用語を保護",
-            value=True,
-            help="医療専門用語の過度な正規化を防ぐ"
-        )
-
-        expand_abbreviations = st.checkbox(
-            "略語を展開",
-            value=False,
-            help="一般的な医療略語を展開形に変換"
-        )
-
-        return preserve_medical_terms, expand_abbreviations
-
-
 # ==================================================
 # メイン処理関数
 # ==================================================
@@ -339,14 +310,6 @@ def main():
     uploaded_file = st.file_uploader(
         "医療QAデータのCSVファイルをアップロードしてください",
         type=['csv'],
-        help="Question, Complex_CoT, Response の3列を含むCSVファイル",
-        key="medical_qa_uploader"
-    )
-    # ファイルアップロード
-    st.subheader("📁 データファイルのアップロード")
-    uploaded_file = st.file_uploader(
-        "医療QAデータのCSVファイルをアップロードしてください",
-        type=['csv'],
         help="Question, Complex_CoT, Response の3列を含むCSVファイル"
     )
 
@@ -355,13 +318,29 @@ def main():
             # ファイル情報の確認
             st.info(f"📁 ファイル: {uploaded_file.name} ({uploaded_file.size:,} bytes)")
 
-            # DataFrameの読み込み
-            df = pd.read_csv(uploaded_file)
+            # セッション状態でファイル処理状況を管理
+            file_key = f"file_{uploaded_file.name}_{uploaded_file.size}"
 
-            # 基本検証
-            validation_results = validate_data(df, DATASET_TYPE)
+            # ファイルが変更された場合は再読み込み
+            if st.session_state.get('current_file_key') != file_key:
+                # DataFrameの読み込み（load_dataset関数を使用）
+                with st.spinner("ファイルを読み込み中..."):
+                    df, validation_results = load_dataset(uploaded_file, DATASET_TYPE)
 
-            logger.info(f"データセット読み込み完了: {len(df)}行, {len(df.columns)}列")
+                # セッション状態に保存
+                st.session_state['current_file_key'] = file_key
+                st.session_state['original_df'] = df
+                st.session_state['validation_results'] = validation_results
+                st.session_state['original_rows'] = len(df)
+                st.session_state['file_processed'] = False
+
+                logger.info(f"新しいファイルを読み込み: {len(df)}行")
+            else:
+                # セッション状態から取得
+                df = st.session_state['original_df']
+                validation_results = st.session_state['validation_results']
+                logger.info(f"セッション状態からファイルを取得: {len(df)}行")
+
             st.success(f"ファイルが正常に読み込まれました。行数: {len(df)}")
 
             # 元データの表示
@@ -371,6 +350,8 @@ def main():
             # データ検証結果の表示
             if show_validation:
                 st.subheader("🔍 データ検証")
+
+                # 基本検証結果
                 for issue in validation_results:
                     st.info(issue)
 
@@ -384,17 +365,21 @@ def main():
             # 前処理実行
             st.subheader("⚙️ 前処理実行")
 
-            if st.button("前処理を実行", type="primary"):
+            if st.button("前処理を実行", type="primary", key="process_button"):
                 try:
                     with st.spinner("前処理中..."):
                         # RAGデータの前処理
                         df_processed = process_rag_data(
-                            df,
+                            df.copy(),  # コピーを作成して元データを保護
                             DATASET_TYPE,
                             combine_columns_option
                         )
 
                     st.success("前処理が完了しました！")
+
+                    # セッション状態に処理済みデータを保存
+                    st.session_state['processed_df'] = df_processed
+                    st.session_state['file_processed'] = True
 
                     # 前処理後のデータ表示
                     st.subheader("✅ 前処理後のデータプレビュー")
@@ -422,97 +407,6 @@ def main():
                                 percentage = (count / len(df_processed)) * 100
                                 st.write(f"- {keyword}: {count}件 ({percentage:.1f}%)")
 
-                    # ダウンロード・保存セクション
-                    st.subheader("💾 ダウンロード・保存")
-
-                    # ダウンロード用データの作成
-                    csv_data, text_data = create_download_data(
-                        df_processed,
-                        combine_columns_option,
-                        DATASET_TYPE
-                    )
-
-                    # ブラウザダウンロード
-                    st.write("**📥 ブラウザダウンロード**")
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.download_button(
-                            label="📊 CSV形式でダウンロード",
-                            data=csv_data,
-                            file_name=f"preprocessed_{DATASET_TYPE}_{len(df_processed)}rows.csv",
-                            mime="text/csv",
-                            help="前処理済みの医療QAデータをCSV形式でダウンロード"
-                        )
-
-                    with col2:
-                        if text_data:
-                            st.download_button(
-                                label="📝 テキスト形式でダウンロード",
-                                data=text_data,
-                                file_name=f"combined_{DATASET_TYPE}_{len(df_processed)}rows.txt",
-                                mime="text/plain",
-                                help="Vector Store/RAG用に最適化された結合テキスト"
-                            )
-
-                    # ローカル保存
-                    st.write("**💾 ローカルファイル保存（OUTPUTフォルダ）**")
-
-                    if st.button("🔄 OUTPUTフォルダに保存", type="secondary"):
-                        try:
-                            with st.spinner("ファイル保存中..."):
-                                saved_files = save_files_to_output(
-                                    df_processed,
-                                    DATASET_TYPE,
-                                    csv_data,
-                                    text_data
-                                )
-
-                            if saved_files:
-                                st.success("✅ ファイル保存完了！")
-
-                                # 保存されたファイル一覧を表示
-                                with st.expander("📂 保存されたファイル一覧", expanded=True):
-                                    for file_type, file_path in saved_files.items():
-                                        if Path(file_path).exists():
-                                            file_size = Path(file_path).stat().st_size
-                                            st.write(f"**{file_type.upper()}**: `{file_path}` ({file_size:,} bytes) ✅")
-                                        else:
-                                            st.write(
-                                                f"**{file_type.upper()}**: `{file_path}` ❌ ファイルが見つかりません")
-
-                                    # OUTPUTフォルダの場所を表示
-                                    output_path = Path("OUTPUT").resolve()
-                                    st.write(f"**保存場所**: `{output_path}`")
-                                    file_count = len(list(output_path.glob("*")))
-                                    st.write(f"**フォルダ内ファイル数**: {file_count}個")
-                            else:
-                                st.error("❌ ファイル保存に失敗しました")
-
-                        except Exception as save_error:
-                            st.error(f"❌ ファイル保存エラー: {str(save_error)}")
-                            logger.error(f"保存エラー: {save_error}")
-
-                            with st.expander("🔧 保存エラー詳細", expanded=False):
-                                import traceback
-                                st.code(traceback.format_exc())
-
-                    # 既存の保存済みファイル一覧
-                    try:
-                        output_dir = Path("OUTPUT")
-                        if output_dir.exists():
-                            saved_files_list = list(output_dir.glob(f"*{DATASET_TYPE}*"))
-                            if saved_files_list:
-                                st.write("**📁 既存の保存済みファイル**")
-                                with st.expander("保存済みファイル一覧", expanded=False):
-                                    for file_path in sorted(saved_files_list, reverse=True)[:5]:  # 最新5件
-                                        file_stats = file_path.stat()
-                                        file_time = datetime.fromtimestamp(file_stats.st_mtime).strftime(
-                                            "%Y-%m-%d %H:%M:%S")
-                                        st.write(f"- `{file_path.name}` ({file_stats.st_size:,} bytes, {file_time})")
-                    except Exception as list_error:
-                        logger.warning(f"ファイル一覧取得エラー: {list_error}")
-
                     logger.info(f"医療QAデータ処理完了: {len(df)} → {len(df_processed)}行")
 
                 except Exception as process_error:
@@ -522,6 +416,109 @@ def main():
                     with st.expander("🔧 前処理エラー詳細", expanded=False):
                         import traceback
                         st.code(traceback.format_exc())
+
+            # 処理済みデータがある場合のみダウンロード・保存セクションを表示
+            if st.session_state.get('file_processed', False) and 'processed_df' in st.session_state:
+                df_processed = st.session_state['processed_df']
+
+                # ダウンロード・保存セクション
+                st.subheader("💾 ダウンロード・保存")
+
+                # ダウンロード用データの作成（キャッシュ）
+                if 'download_data' not in st.session_state or st.session_state.get('download_data_key') != file_key:
+                    with st.spinner("ダウンロード用データを準備中..."):
+                        csv_data, text_data = create_download_data(
+                            df_processed,
+                            combine_columns_option,
+                            DATASET_TYPE
+                        )
+                        st.session_state['download_data'] = (csv_data, text_data)
+                        st.session_state['download_data_key'] = file_key
+                else:
+                    csv_data, text_data = st.session_state['download_data']
+
+                # ブラウザダウンロード
+                st.write("**📥 ブラウザダウンロード**")
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.download_button(
+                        label="📊 CSV形式でダウンロード",
+                        data=csv_data,
+                        file_name=f"preprocessed_{DATASET_TYPE}_{len(df_processed)}rows.csv",
+                        mime="text/csv",
+                        help="前処理済みの医療QAデータをCSV形式でダウンロード"
+                    )
+
+                with col2:
+                    if text_data:
+                        st.download_button(
+                            label="📝 テキスト形式でダウンロード",
+                            data=text_data,
+                            file_name=f"combined_{DATASET_TYPE}_{len(df_processed)}rows.txt",
+                            mime="text/plain",
+                            help="Vector Store/RAG用に最適化された結合テキスト"
+                        )
+
+                # ローカル保存
+                st.write("**💾 ローカルファイル保存（OUTPUTフォルダ）**")
+
+                if st.button("🔄 OUTPUTフォルダに保存", type="secondary", key="save_button"):
+                    try:
+                        with st.spinner("ファイル保存中..."):
+                            logger.info("=== ファイル保存処理開始 ===")
+                            saved_files = save_files_to_output(
+                                df_processed,
+                                DATASET_TYPE,
+                                csv_data,
+                                text_data
+                            )
+                            logger.info(f"=== ファイル保存処理完了: {saved_files} ===")
+
+                        if saved_files:
+                            st.success("✅ ファイル保存完了！")
+
+                            # 保存されたファイル一覧を表示
+                            with st.expander("📂 保存されたファイル一覧", expanded=True):
+                                for file_type, file_path in saved_files.items():
+                                    if Path(file_path).exists():
+                                        file_size = Path(file_path).stat().st_size
+                                        st.write(f"**{file_type.upper()}**: `{file_path}` ({file_size:,} bytes) ✅")
+                                    else:
+                                        st.write(
+                                            f"**{file_type.upper()}**: `{file_path}` ❌ ファイルが見つかりません")
+
+                                # OUTPUTフォルダの場所を表示
+                                output_path = Path("OUTPUT").resolve()
+                                st.write(f"**保存場所**: `{output_path}`")
+                                file_count = len(list(output_path.glob("*")))
+                                st.write(f"**フォルダ内ファイル数**: {file_count}個")
+                        else:
+                            st.error("❌ ファイル保存に失敗しました")
+
+                    except Exception as save_error:
+                        st.error(f"❌ ファイル保存エラー: {str(save_error)}")
+                        logger.error(f"保存エラー: {save_error}")
+
+                        with st.expander("🔧 保存エラー詳細", expanded=False):
+                            import traceback
+                            st.code(traceback.format_exc())
+
+                # 既存の保存済みファイル一覧
+                try:
+                    output_dir = Path("OUTPUT")
+                    if output_dir.exists():
+                        saved_files_list = list(output_dir.glob(f"*{DATASET_TYPE}*"))
+                        if saved_files_list:
+                            st.write("**📁 既存の保存済みファイル**")
+                            with st.expander("保存済みファイル一覧", expanded=False):
+                                for file_path in sorted(saved_files_list, reverse=True)[:5]:  # 最新5件
+                                    file_stats = file_path.stat()
+                                    file_time = datetime.fromtimestamp(file_stats.st_mtime).strftime(
+                                        "%Y-%m-%d %H:%M:%S")
+                                    st.write(f"- `{file_path.name}` ({file_stats.st_size:,} bytes, {file_time})")
+                except Exception as list_error:
+                    logger.warning(f"ファイル一覧取得エラー: {list_error}")
 
         except Exception as e:
             st.error(f"エラーが発生しました: {str(e)}")
@@ -554,336 +551,11 @@ def main():
 
                 # 環境情報
                 st.write("**環境情報:**")
-                import pandas as pd
                 st.write(f"- pandas version: {pd.__version__}")
                 st.write(f"- streamlit version: {st.__version__}")
 
     else:
         st.info("👆 CSVファイルをアップロードしてください")
-        try:
-            # データセットの読み込みと基本検証
-            df, validation_results = load_dataset(uploaded_file, DATASET_TYPE)
-
-            # ファイルアップロードの際に元の行数を保存
-            st.session_state['original_rows'] = len(df)
-            st.success(f"ファイルが正常に読み込まれました。行数: {len(df)}")
-
-            # 元データの表示
-            st.subheader("📋 元データプレビュー")
-            st.dataframe(df.head(10))
-
-            # データ検証結果の表示
-            if show_validation:
-                st.subheader("🔍 データ検証")
-
-                # 基本検証結果
-                for issue in validation_results:
-                    st.info(issue)
-
-                # 医療データ特有の検証
-                medical_issues = validate_medical_data_specific(df)
-                if medical_issues:
-                    st.write("**医療データ特有の分析:**")
-                    for issue in medical_issues:
-                        st.info(issue)
-
-            # 前処理実行
-            st.subheader("⚙️ 前処理実行")
-
-            if st.button("前処理を実行", type="primary"):
-                # RAGデータの前処理
-                df_processed = process_rag_data(
-                    df,
-                    DATASET_TYPE,
-                    combine_columns_option
-                )
-
-                st.success("前処理が完了しました！")
-
-                # 前処理後のデータ表示
-                st.subheader("✅ 前処理後のデータプレビュー")
-                st.dataframe(df_processed.head(10))
-
-                # 統計情報の表示
-                display_statistics(df, df_processed, DATASET_TYPE)
-
-                # 医療データ特有の後処理分析
-                if 'Combined_Text' in df_processed.columns:
-                    st.subheader("🏥 医療データ特有の分析")
-
-                    # 結合テキストの医療用語分析
-                    combined_texts = df_processed['Combined_Text']
-                    medical_keywords = ['症状', '診断', '治療', '薬', '病気', '疾患']
-
-                    keyword_counts = {}
-                    for keyword in medical_keywords:
-                        count = combined_texts.str.contains(keyword, case=False).sum()
-                        keyword_counts[keyword] = count
-
-                    if keyword_counts:
-                        st.write("**医療用語の出現頻度:**")
-                        for keyword, count in keyword_counts.items():
-                            percentage = (count / len(df_processed)) * 100
-                            st.write(f"- {keyword}: {count}件 ({percentage:.1f}%)")
-
-                # ダウンロード機能
-                st.subheader("💾 ダウンロード・保存")
-
-                # ダウンロード用データの作成
-                csv_data, text_data = create_download_data(
-                    df_processed,
-                    combine_columns_option,
-                    DATASET_TYPE
-                )
-
-                # ダウンロード機能（ブラウザ経由）
-                st.write("**📥 ブラウザダウンロード**")
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    # CSVダウンロード
-                    st.download_button(
-                        label="📊 CSV形式でダウンロード",
-                        data=csv_data,
-                        file_name=f"preprocessed_{DATASET_TYPE}_{str(len(df_processed))}rows.csv",
-                        mime="text/csv",
-                        help="前処理済みの医療QAデータをCSV形式でダウンロード"
-                    )
-
-                with col2:
-                    # 結合テキストダウンロード
-                    if text_data:
-                        st.download_button(
-                            label="📝 テキスト形式でダウンロード",
-                            data=text_data,
-                            file_name=f"combined_{DATASET_TYPE}_{str(len(df_processed))}rows.txt",
-                            mime="text/plain",
-                            help="Vector Store/RAG用に最適化された結合テキスト"
-                        )
-
-                # ローカルファイル保存機能（OUTPUTフォルダ）
-                st.write("**💾 ローカルファイル保存（OUTPUTフォルダ）**")
-
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.info("💡 ファイルはプロジェクトのOUTPUTフォルダに保存されます")
-
-                with col2:
-                    if st.button("🔄 OUTPUTフォルダに保存", type="primary"):
-                        # ボタンクリック確認
-                        st.write("🔄 保存処理を開始します...")
-                        logger.info("=== 保存ボタンがクリックされました ===")
-
-                        try:
-                            # デバッグ: データの存在確認
-                            logger.info(f"csv_data存在確認: {csv_data is not None}")
-                            logger.info(f"csv_data長さ: {len(csv_data) if csv_data else 0}")
-                            logger.info(f"text_data存在確認: {text_data is not None}")
-                            logger.info(f"text_data長さ: {len(text_data) if text_data else 0}")
-                            logger.info(f"df_processed行数: {len(df_processed)}")
-
-                            with st.spinner("ファイル保存中..."):
-                                # デバッグ情報の表示
-                                logger.info("ファイル保存処理開始")
-
-                                # データの存在確認（詳細）
-                                if not csv_data:
-                                    error_msg = "CSVデータが空です"
-                                    st.error(f"❌ {error_msg}")
-                                    logger.error(error_msg)
-
-                                    # データ再作成を試行
-                                    st.info("📊 データの再作成を試行中...")
-                                    try:
-                                        logger.info("csv_data再作成開始")
-                                        csv_data, text_data = create_download_data(
-                                            df_processed,
-                                            combine_columns_option,
-                                            DATASET_TYPE
-                                        )
-                                        logger.info(
-                                            f"再作成後 - csv_data: {len(csv_data)}, text_data: {len(text_data) if text_data else 0}")
-
-                                        if not csv_data:
-                                            st.error("❌ データの再作成にも失敗しました")
-                                            logger.error("データ再作成失敗")
-                                            return
-                                        else:
-                                            st.success("✅ データの再作成に成功")
-                                            logger.info("データ再作成成功")
-                                    except Exception as recreate_error:
-                                        st.error(f"❌ データ再作成エラー: {recreate_error}")
-                                        logger.error(f"データ再作成エラー: {recreate_error}")
-                                        return
-
-                                # データサイズの詳細確認
-                                st.info(
-                                    f"📊 データサイズ確認: CSV={len(csv_data):,}文字, TXT={len(text_data) if text_data else 0:,}文字")
-
-                                # 保存処理の実行
-                                logger.info("save_files_to_output関数呼び出し開始")
-                                saved_files = save_files_to_output(
-                                    df_processed,
-                                    DATASET_TYPE,
-                                    csv_data,
-                                    text_data
-                                )
-                                logger.info(f"save_files_to_output関数完了: {saved_files}")
-
-                                if saved_files:
-                                    st.success("✅ ファイル保存完了！")
-                                    logger.info(f"保存成功: {len(saved_files)}個のファイル")
-
-                                    # 保存されたファイル一覧を表示
-                                    with st.expander("📂 保存されたファイル一覧", expanded=True):
-                                        for file_type, file_path in saved_files.items():
-                                            try:
-                                                if Path(file_path).exists():
-                                                    file_size = Path(file_path).stat().st_size
-                                                    st.write(
-                                                        f"**{file_type.upper()}**: `{file_path}` ({file_size:,} bytes) ✅")
-                                                    logger.info(
-                                                        f"ファイル確認OK: {file_type} - {file_path} ({file_size} bytes)")
-                                                else:
-                                                    st.write(
-                                                        f"**{file_type.upper()}**: `{file_path}` ❌ ファイルが見つかりません")
-                                                    logger.error(f"ファイル確認NG: {file_type} - {file_path}")
-                                            except Exception as e:
-                                                st.write(f"**{file_type.upper()}**: `{file_path}` ❌ エラー: {e}")
-                                                logger.error(f"ファイル確認エラー: {file_type} - {e}")
-
-                                        # OUTPUTフォルダの場所を表示
-                                        try:
-                                            output_path = Path("OUTPUT").resolve()
-                                            st.write(f"**保存場所**: `{output_path}`")
-
-                                            # フォルダ内のファイル数
-                                            file_count = len(list(output_path.glob("*")))
-                                            st.write(f"**フォルダ内ファイル数**: {file_count}個")
-                                            logger.info(f"OUTPUTフォルダ: {output_path}, ファイル数: {file_count}")
-                                        except Exception as e:
-                                            st.error(f"パス情報取得エラー: {e}")
-                                            logger.error(f"パス情報エラー: {e}")
-
-                                    # セッション状態の更新
-                                    st.session_state['files_saved'] = True
-                                    st.session_state['last_save_time'] = datetime.now().isoformat()
-                                    logger.info("セッション状態更新完了")
-                                else:
-                                    st.error("❌ ファイル保存に失敗しました（戻り値が空）")
-                                    logger.error("保存関数から空の戻り値")
-
-                        except Exception as e:
-                            st.error(f"❌ ファイル保存エラー: {str(e)}")
-                            logger.error(f"保存処理総合エラー: {type(e).__name__}: {e}")
-
-                            # トレースバックの詳細ログ
-                            import traceback
-                            logger.error(f"トレースバック: {traceback.format_exc()}")
-
-                            # デバッグ情報の表示
-                            with st.expander("🔧 デバッグ情報", expanded=True):
-                                st.code(traceback.format_exc())
-
-                                # 現在のディレクトリ情報
-                                try:
-                                    import os
-                                    current_dir = os.getcwd()
-                                    st.write(f"現在のディレクトリ: {current_dir}")
-
-                                    # OUTPUTフォルダの状態確認
-                                    output_path = Path("OUTPUT")
-                                    if output_path.exists():
-                                        st.write(f"OUTPUTフォルダ: 存在 ({output_path.resolve()})")
-                                        try:
-                                            files = list(output_path.glob("*"))
-                                            st.write(f"フォルダ内ファイル数: {len(files)}")
-                                            if files:
-                                                st.write("ファイル一覧:")
-                                                for f in files[:5]:  # 最初の5個を表示
-                                                    st.write(f"  - {f.name}")
-                                        except Exception as file_error:
-                                            st.write(f"フォルダ内容の確認に失敗: {file_error}")
-                                    else:
-                                        st.write("OUTPUTフォルダ: 存在しない")
-
-                                    # 変数の状態確認
-                                    st.write("**変数の状態:**")
-                                    st.write(f"- csv_data: {type(csv_data)} (長さ: {len(csv_data) if csv_data else 0})")
-                                    st.write(
-                                        f"- text_data: {type(text_data)} (長さ: {len(text_data) if text_data else 0})")
-                                    st.write(f"- df_processed: {type(df_processed)} (行数: {len(df_processed)})")
-                                    st.write(f"- DATASET_TYPE: {DATASET_TYPE}")
-
-                                except Exception as debug_e:
-                                    st.write(f"デバッグ情報取得エラー: {debug_e}")
-                                    logger.error(f"デバッグ情報エラー: {debug_e}")
-
-                            # 手動でのディレクトリ作成を提案
-                            st.info("💡 手動でOUTPUTフォルダを作成してから再試行してください")
-
-                            if st.button("🔄 再試行", key="retry_save"):
-                                logger.info("再試行ボタンがクリックされました")
-                                st.rerun()
-
-                # 既存の保存済みファイル一覧
-                st.write("**📁 既存の保存済みファイル**")
-                try:
-                    output_dir = Path("OUTPUT")
-                    if output_dir.exists() and output_dir.is_dir():
-                        saved_files_list = list(output_dir.glob(f"*{DATASET_TYPE}*"))
-                        if saved_files_list:
-                            with st.expander("保存済みファイル一覧", expanded=False):
-                                for file_path in sorted(saved_files_list, reverse=True)[:10]:  # 最新10件
-                                    try:
-                                        file_stats = file_path.stat()
-                                        file_time = datetime.fromtimestamp(file_stats.st_mtime).strftime(
-                                            "%Y-%m-%d %H:%M:%S")
-                                        st.write(f"- `{file_path.name}` ({file_stats.st_size:,} bytes, {file_time})")
-                                    except Exception as e:
-                                        st.write(f"- `{file_path.name}` (情報取得エラー: {e})")
-
-                                if len(saved_files_list) > 10:
-                                    st.write(f"... 他 {len(saved_files_list) - 10} 個のファイル")
-                        else:
-                            st.info(f"📂 OUTPUTフォルダに{DATASET_TYPE}関連ファイルは見つかりませんでした")
-                    else:
-                        st.info("📂 OUTPUTフォルダがまだ作成されていません")
-
-                        # フォルダ作成ボタンを提供
-                        if st.button("📁 OUTPUTフォルダを作成", key="create_output_dir"):
-                            try:
-                                create_output_directory()
-                                st.success("✅ OUTPUTフォルダを作成しました")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ フォルダ作成エラー: {e}")
-                except Exception as e:
-                    st.error(f"❌ ファイル一覧取得エラー: {e}")
-                    logger.error(f"ファイル一覧エラー: {e}")
-
-                # 処理済みデータの保存（セッションステート）
-                st.session_state[f'processed_{DATASET_TYPE}'] = {
-                    'data'                  : df_processed,
-                    'original_rows'         : st.session_state.get('original_rows', len(df)),
-                    'processed_rows'        : len(df_processed),
-                    'timestamp'             : datetime.now().isoformat(),
-                    'files_saved'           : False,  # まだ保存されていない
-                    'csv_data_size'         : len(csv_data),
-                    'text_data_size'        : len(text_data) if text_data else 0,
-                    # 重要：保存用データをセッション状態に保存
-                    'csv_data'              : csv_data,
-                    'text_data'             : text_data,
-                    'combine_columns_option': combine_columns_option
-                }
-
-                logger.info(f"医療QAデータ処理完了: {len(df)} → {len(df_processed)}行")
-
-        except Exception as e:
-            st.error(f"エラーが発生しました: {str(e)}")
-            logger.error(f"医療QAデータ処理エラー: {e}")
-            if st.checkbox("詳細なエラー情報を表示"):
-                st.exception(e)
 
     # 使用方法の説明
     show_usage_instructions(DATASET_TYPE)
@@ -891,40 +563,29 @@ def main():
     # セッション状態の表示（デバッグ用）
     if st.sidebar.checkbox("🔧 セッション状態を表示", value=False):
         with st.sidebar.expander("セッション状態", expanded=False):
-            if f'processed_{DATASET_TYPE}' in st.session_state:
-                processed_info = st.session_state[f'processed_{DATASET_TYPE}']
-                st.write(f"**処理済みデータ**: {processed_info['processed_rows']}行")
-                st.write(f"**元データ**: {processed_info['original_rows']}行")
-                st.write(f"**処理時刻**: {processed_info.get('timestamp', 'N/A')}")
+            # 基本情報
+            st.write(f"**現在のファイルキー**: {st.session_state.get('current_file_key', 'None')}")
+            st.write(f"**ファイル処理済み**: {st.session_state.get('file_processed', False)}")
 
-                # ファイル保存状態
-                if 'files_saved' in processed_info:
-                    if processed_info['files_saved']:
-                        st.write("**ファイル保存**: ✅ 完了")
-                        if 'last_save_time' in st.session_state:
-                            st.write(f"**最終保存時刻**: {st.session_state['last_save_time']}")
-                    else:
-                        st.write("**ファイル保存**: ❌ 未保存")
+            if 'original_df' in st.session_state:
+                df = st.session_state['original_df']
+                st.write(f"**元データ**: {len(df)}行")
 
-                # データサイズ情報
-                if 'csv_data_size' in processed_info:
-                    st.write(f"**CSVデータサイズ**: {processed_info['csv_data_size']:,} 文字")
-                if 'text_data_size' in processed_info:
-                    st.write(f"**テキストデータサイズ**: {processed_info['text_data_size']:,} 文字")
+            if 'processed_df' in st.session_state:
+                df_processed = st.session_state['processed_df']
+                st.write(f"**処理済みデータ**: {len(df_processed)}行")
 
-                # OUTPUTフォルダの状態
-                try:
-                    output_dir = Path("OUTPUT")
-                    if output_dir.exists():
-                        file_count = len(list(output_dir.glob(f"*{DATASET_TYPE}*")))
-                        st.write(f"**保存済みファイル**: {file_count}個")
-                        st.write(f"**フォルダパス**: `{output_dir.resolve()}`")
-                    else:
-                        st.write("**OUTPUTフォルダ**: 未作成")
-                except Exception as e:
-                    st.write(f"**フォルダ状態**: エラー ({e})")
-            else:
-                st.write("処理済みデータなし")
+            # OUTPUTフォルダの状態
+            try:
+                output_dir = Path("OUTPUT")
+                if output_dir.exists():
+                    file_count = len(list(output_dir.glob(f"*{DATASET_TYPE}*")))
+                    st.write(f"**保存済みファイル**: {file_count}個")
+                    st.write(f"**フォルダパス**: `{output_dir.resolve()}`")
+                else:
+                    st.write("**OUTPUTフォルダ**: 未作成")
+            except Exception as e:
+                st.write(f"**フォルダ状態**: エラー ({e})")
 
 
 # ==================================================

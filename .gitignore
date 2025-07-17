@@ -328,3 +328,6 @@ cython_debug/
 /datasets/sciq_qa.csv
 /datasets/trivia_qa.csv
 /datasets/vector_store_mapping.json
+/OUTPUT/combined_medical_qa_19704rows_20250718_065028.txt
+/OUTPUT/metadata_medical_qa_20250718_065028.json
+/OUTPUT/preprocessed_medical_qa_19704rows_20250718_065028.csv
