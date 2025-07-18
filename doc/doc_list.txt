@@ -1,10 +1,10 @@
 
 Datasetsリスト：
 customer_support_faq.csv    ① カスタマーサポート・FAQデータセット
-legal_qa.csv                ⑤ 法律・判例QAデータセット
+trivia_qa.csv               ② 一般知識・トリビアQAデータセット
 medical_qa.csv              ③ 医療質問回答データセット
 sciq_qa.csv                 ④ 科学・技術QAデータセット
-trivia_qa.csv               ② 一般知識・トリビアQAデータセット
+legal_qa.csv                ⑤ 法律・判例QAデータセット
 
 仕様書：
 概要書
