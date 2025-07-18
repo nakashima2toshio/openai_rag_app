@@ -6,4 +6,17 @@ medical_qa.csv              ③ 医療質問回答データセット
 sciq_qa.csv                 ④ 科学・技術QAデータセット
 trivia_qa.csv               ② 一般知識・トリビアQAデータセット
 
+仕様書：
+概要書
+・処理の概要
+・mainの処理の流れ
+
+関数・一覧
+・列データ：　関数名, 処理概要
+
+関数の詳細設計書
+・処理概要
+・処理の流れ
+・IPO(INPUT、PROCESS、OUTPUT)
+
 
