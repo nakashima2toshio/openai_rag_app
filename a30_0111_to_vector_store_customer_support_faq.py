@@ -1,7 +1,0 @@
-# a30_0111_to_vector_store_customer_support_faq.py
-# OUTPUT/combined_customer_support_faq_89rows_20250718_073255.txt
-# OUTPUT/combined_medical_qa_19704rows_20250718_093844.txt
-# OUTPUT/combined_sciq_qa_11679rows_20250718_104808.txt
-# OUTPUT/combined_legal_qa_4rows_20250718_110901.txt
-
-
