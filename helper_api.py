@@ -806,22 +806,6 @@ def create_session_id() -> str:
     """セッションIDの生成"""
     return hashlib.md5(f"{time.time()}_{id(object())}".encode()).hexdigest()[:8]
 
-
-# ==================================================
-# 定数定義
-# ==================================================
-developer_text = (
-    "You are a strong developer and good at teaching software developer professionals "
-    "please provide an up-to-date, informed overview of the API by function, then show "
-    "cookbook programs for each, and explain the API options."
-)
-user_text = (
-    "Organize and identify the problem and list the issues. "
-    "Then, provide a solution procedure for the issues you have organized and identified, "
-    "and solve the problems/issues according to the solution procedures."
-)
-assistant_text = "I'll help you with your software development needs. Please let me know what you'd like to work on."
-
 # ==================================================
 # エクスポート
 # ==================================================

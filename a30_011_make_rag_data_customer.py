@@ -1,6 +1,6 @@
-# a30_011_make_rag_data_customer_support_faq.py
+# a30_011_make_rag_data_customer.py
 # カスタマーサポートFAQデータのRAG前処理（シンプル版）
-# streamlit run a30_011_make_rag_data_customer_support_faq.py --server.port=8501
+# streamlit run a30_011_make_rag_data_customer.py --server.port=8501
 
 import streamlit as st
 import pandas as pd
@@ -620,4 +620,4 @@ if __name__ == "__main__":
     main()
 
 # 実行コマンド:
-# streamlit run a30_011_make_rag_data_customer_support_faq.py --server.port=8501
+# streamlit run a30_011_make_rag_data_customer.py --server.port=8501
