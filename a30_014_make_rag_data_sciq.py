@@ -147,7 +147,8 @@ def save_files_to_output(df_processed, dataset_type: str, csv_data: str, text_da
 
         # 結合テキストファイルの保存
         if text_data and len(text_data.strip()) > 0:
-            txt_filename = f"combined_{dataset_type}_{len(df_processed)}rows_{timestamp}.txt"
+            # txt_filename = f"combined_{dataset_type}_{len(df_processed)}rows_{timestamp}.txt"
+            txt_filename = f"{dataset_type}.txt"  # 固定ファイル名に変更
             txt_path = output_dir / txt_filename
             logger.info(f"テキストファイル保存開始: {txt_path}")
 
@@ -510,7 +511,8 @@ def main():
                         st.download_button(
                             label="📝 テキスト形式でダウンロード",
                             data=text_data,
-                            file_name=f"combined_{DATASET_TYPE}_{len(df_processed)}rows.txt",
+                            # file_name=f"combined_{DATASET_TYPE}_{len(df_processed)}rows.txt",
+                            file_name=f"sciq_qa.txt",
                             mime="text/plain",
                             help="Vector Store/RAG用に最適化された結合テキスト"
                         )
