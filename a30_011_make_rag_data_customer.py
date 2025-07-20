@@ -1,6 +1,5 @@
 # a30_012_make_rag_data_customer_standalone.py
 # カスタマーサポートFAQデータのRAG前処理（モデル選択機能付き・完全独立版）
-# 外部ヘルパーモジュールへの依存なし
 # streamlit run a30_012_make_rag_data_customer_standalone.py --server.port=8501
 
 import streamlit as st
