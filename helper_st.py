@@ -1,74 +1,222 @@
-# helper_st.py
-# Streamlit UI関連機能
-# -----------------------------------------
-from functools import wraps
-from typing import List, Dict, Any, Optional, Union, Tuple
-from datetime import datetime
-from abc import ABC, abstractmethod
-import json
-import time
-import traceback
+# a30_011_make_rag_data_customer.py
+# カスタマーサポートFAQデータのRAG前処理（モデル選択機能付き・独立版）
+# streamlit run a30_011_make_rag_data_customer.py --server.port=8501
 
 import streamlit as st
+import pandas as pd
+import re
+import io
+import logging
+import json
+import os
+from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+from datetime import datetime
+from functools import wraps
 
-from openai.types.responses import (
-    EasyInputMessageParam,
-    ResponseInputTextParam,
-    ResponseInputImageParam,
-    Response,
-)
-
-# helper_api.pyから必要な機能をインポート
-from helper_api import (
-    # 型定義
-    RoleType,
-
-    # クラス
-    ConfigManager,
-    MessageManager,
-    TokenManager,
-    ResponseProcessor,
-    OpenAIClient,
-
-    # ユーティリティ
-    sanitize_key,
-    format_timestamp,
-    save_json_file,
-    safe_json_serializer,
-    safe_json_dumps,
-
-    # グローバル
-    config,
-    logger,
-    cache,
-)
+# 基本ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # ==================================================
-# 安全なStreamlit JSON表示関数
+# 設定管理（独立実装）
 # ==================================================
-def safe_streamlit_json(data: Any, expanded: bool = True):
-    """Streamlit用の安全なJSON表示"""
+class AppConfig:
+    """アプリケーション設定（独立実装）"""
+
+    # 利用可能なモデル
+    AVAILABLE_MODELS = [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4o-audio-preview",
+        "gpt-4o-mini-audio-preview",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "o1",
+        "o1-mini",
+        "o3",
+        "o3-mini",
+        "o4",
+        "o4-mini"
+    ]
+
+    DEFAULT_MODEL = "gpt-4o-mini"
+
+    # モデル料金（1000トークンあたりのドル）
+    MODEL_PRICING = {
+        "gpt-4o"                   : {"input": 0.005, "output": 0.015},
+        "gpt-4o-mini"              : {"input": 0.00015, "output": 0.0006},
+        "gpt-4o-audio-preview"     : {"input": 0.01, "output": 0.02},
+        "gpt-4o-mini-audio-preview": {"input": 0.00025, "output": 0.001},
+        "gpt-4.1"                  : {"input": 0.0025, "output": 0.01},
+        "gpt-4.1-mini"             : {"input": 0.0001, "output": 0.0004},
+        "o1"                       : {"input": 0.015, "output": 0.06},
+        "o1-mini"                  : {"input": 0.003, "output": 0.012},
+        "o3"                       : {"input": 0.03, "output": 0.12},
+        "o3-mini"                  : {"input": 0.006, "output": 0.024},
+        "o4"                       : {"input": 0.05, "output": 0.20},
+        "o4-mini"                  : {"input": 0.01, "output": 0.04},
+    }
+
+    # モデル制限
+    MODEL_LIMITS = {
+        "gpt-4o"      : {"max_tokens": 128000, "max_output": 4096},
+        "gpt-4o-mini" : {"max_tokens": 128000, "max_output": 4096},
+        "gpt-4.1"     : {"max_tokens": 128000, "max_output": 4096},
+        "gpt-4.1-mini": {"max_tokens": 128000, "max_output": 4096},
+        "o1"          : {"max_tokens": 128000, "max_output": 32768},
+        "o1-mini"     : {"max_tokens": 128000, "max_output": 65536},
+        "o3"          : {"max_tokens": 200000, "max_output": 100000},
+        "o3-mini"     : {"max_tokens": 200000, "max_output": 100000},
+        "o4"          : {"max_tokens": 256000, "max_output": 128000},
+        "o4-mini"     : {"max_tokens": 256000, "max_output": 128000},
+    }
+
+    @classmethod
+    def get_model_limits(cls, model: str) -> Dict[str, int]:
+        """モデルの制限を取得"""
+        return cls.MODEL_LIMITS.get(model, {"max_tokens": 128000, "max_output": 4096})
+
+    @classmethod
+    def get_model_pricing(cls, model: str) -> Dict[str, float]:
+        """モデルの料金を取得"""
+        return cls.MODEL_PRICING.get(model, {"input": 0.00015, "output": 0.0006})
+
+
+# ==================================================
+# RAG設定（独立実装）
+# ==================================================
+class RAGConfig:
+    """RAGデータ前処理の設定"""
+
+    DATASET_CONFIGS = {
+        "customer_support_faq": {
+            "name"            : "カスタマーサポート・FAQ",
+            "icon"            : "💬",
+            "required_columns": ["question", "answer"],
+            "description"     : "カスタマーサポートFAQデータセット",
+            "combine_template": "{question} {answer}"
+        }
+    }
+
+    @classmethod
+    def get_config(cls, dataset_type: str) -> Dict[str, Any]:
+        """データセット設定の取得"""
+        return cls.DATASET_CONFIGS.get(dataset_type, {
+            "name"            : "未知のデータセット",
+            "icon"            : "❓",
+            "required_columns": [],
+            "description"     : "未知のデータセット",
+            "combine_template": "{}"
+        })
+
+
+# ==================================================
+# トークン管理（独立実装）
+# ==================================================
+class TokenManager:
+    """トークン数の管理（簡易版）"""
+
+    @staticmethod
+    def count_tokens(text: str, model: str = None) -> int:
+        """テキストのトークン数をカウント（簡易推定）"""
+        if not text:
+            return 0
+        # 簡易推定: 1文字 = 0.5トークン（日本語）、1単語 = 1トークン（英語）
+        japanese_chars = len([c for c in text if ord(c) > 127])
+        english_chars = len(text) - japanese_chars
+        return int(japanese_chars * 0.5 + english_chars * 0.25)
+
+    @staticmethod
+    def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+        """API使用コストの推定"""
+        pricing = AppConfig.get_model_pricing(model)
+        input_cost = (input_tokens / 1000) * pricing["input"]
+        output_cost = (output_tokens / 1000) * pricing["output"]
+        return input_cost + output_cost
+
+
+# ==================================================
+# UI関数（独立実装）
+# ==================================================
+def select_model(key: str = "model_selection") -> str:
+    """モデル選択UI"""
+    models = AppConfig.AVAILABLE_MODELS
+    default_model = AppConfig.DEFAULT_MODEL
+
     try:
-        # 直接st.json()を試行
-        st.json(data, expanded=expanded)
+        default_index = models.index(default_model)
+    except ValueError:
+        default_index = 0
+
+    selected = st.sidebar.selectbox(
+        "🤖 モデルを選択",
+        models,
+        index=default_index,
+        key=key,
+        help="利用するOpenAIモデルを選択してください"
+    )
+
+    return selected
+
+
+def show_model_info(selected_model: str) -> None:
+    """選択されたモデルの情報を表示"""
+    try:
+        limits = AppConfig.get_model_limits(selected_model)
+        pricing = AppConfig.get_model_pricing(selected_model)
+
+        with st.sidebar.expander("📊 選択モデル情報", expanded=False):
+            # 基本情報
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**最大入力**")
+                st.write(f"{limits['max_tokens']:,}")
+            with col2:
+                st.write("**最大出力**")
+                st.write(f"{limits['max_output']:,}")
+
+            # 料金情報
+            st.write("**料金（1000トークン）**")
+            st.write(f"- 入力: ${pricing['input']:.5f}")
+            st.write(f"- 出力: ${pricing['output']:.5f}")
+
+            # モデル特性
+            if selected_model.startswith("o"):
+                st.info("🧠 推論特化モデル")
+                st.write("高度な推論タスクに最適化")
+            elif "audio" in selected_model:
+                st.info("🎵 音声対応モデル")
+                st.write("音声入力・出力に対応")
+            elif "gpt-4o" in selected_model:
+                st.info("👁️ マルチモーダルモデル")
+                st.write("テキスト・画像の理解が可能")
+            else:
+                st.info("💬 標準対話モデル")
+                st.write("一般的な対話・テキスト処理")
+
+            # RAG用途での推奨度
+            st.write("**RAG用途推奨度**")
+            if selected_model in ["gpt-4o-mini", "gpt-4.1-mini"]:
+                st.success("✅ 最適（コスト効率良好）")
+            elif selected_model in ["gpt-4o", "gpt-4.1"]:
+                st.info("💡 高品質（コスト高）")
+            elif selected_model.startswith("o"):
+                st.warning("⚠️ 推論特化（RAG用途には過剰）")
+            else:
+                st.info("💬 標準的な性能")
+
     except Exception as e:
-        try:
-            # カスタムシリアライザーでリトライ
-            json_str = safe_json_dumps(data)
-            parsed_data = json.loads(json_str)
-            st.json(parsed_data, expanded=expanded)
-        except Exception as e2:
-            # 最終フォールバック: コードブロックで表示
-            st.error(f"JSON表示エラー: {e}")
-            st.code(str(data), language="python")
+        logger.error(f"モデル情報表示エラー: {e}")
+        st.sidebar.error("モデル情報の取得に失敗しました")
 
 
 # ==================================================
-# デコレータ（Streamlit UI用）
+# デコレータ（独立実装）
 # ==================================================
-def error_handler_ui(func):
-    # エラーハンドリングデコレータ（Streamlit UI用）
+def error_handler(func):
+    """エラーハンドリングデコレータ"""
 
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -76,953 +224,675 @@ def error_handler_ui(func):
             return func(*args, **kwargs)
         except Exception as e:
             logger.error(f"Error in {func.__name__}: {str(e)}")
-            error_msg = config.get("error_messages.general_error", f"エラーが発生しました: {str(e)}")
-            st.error(error_msg)
-            if config.get("experimental.debug_mode", False):
-                st.exception(e)
+            st.error(f"エラーが発生しました: {str(e)}")
             return None
 
     return wrapper
 
 
-def timer_ui(func):
-    """実行時間計測デコレータ（Streamlit UI用）"""
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = datetime.now()
-        result = func(*args, **kwargs)
-        end_time = datetime.now()
-        execution_time = (end_time - start_time).total_seconds()
-
-        logger.info(f"{func.__name__} took {execution_time:.2f} seconds")
-
-        # パフォーマンスモニタリングが有効な場合
-        if config.get("experimental.performance_monitoring", True):
-            if 'performance_metrics' not in st.session_state:
-                st.session_state.performance_metrics = []
-            st.session_state.performance_metrics.append({
-                'function'      : func.__name__,
-                'execution_time': execution_time,
-                'timestamp'     : datetime.now()
-            })
-
-        return result
-
-    return wrapper
-
-
-def cache_result_ui(ttl: int = None):
-    """結果をキャッシュするデコレータ（Streamlit session_state用）"""
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            if not config.get("cache.enabled", True):
-                return func(*args, **kwargs)
-
-            # キャッシュキーの生成
-            import hashlib
-            cache_key = f"{func.__name__}_{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}"
-
-            # セッションステートにキャッシュ領域を確保
-            if 'ui_cache' not in st.session_state:
-                st.session_state.ui_cache = {}
-
-            # キャッシュの確認
-            if cache_key in st.session_state.ui_cache:
-                cached_data = st.session_state.ui_cache[cache_key]
-                if time.time() - cached_data['timestamp'] < (ttl or config.get("cache.ttl", 3600)):
-                    return cached_data['result']
-
-            # 関数実行とキャッシュ保存
-            result = func(*args, **kwargs)
-            st.session_state.ui_cache[cache_key] = {
-                'result'   : result,
-                'timestamp': time.time()
-            }
-
-            # キャッシュサイズ制限
-            max_size = config.get("cache.max_size", 100)
-            if len(st.session_state.ui_cache) > max_size:
-                # 最も古いエントリを削除
-                oldest_key = min(st.session_state.ui_cache,
-                                 key=lambda k: st.session_state.ui_cache[k]['timestamp'])
-                del st.session_state.ui_cache[oldest_key]
-
-            return result
-
-        return wrapper
-
-    return decorator
-
-
 # ==================================================
-# セッション状態管理
+# データ処理関数（独立実装）
 # ==================================================
-class SessionStateManager:
-    """Streamlit セッション状態の管理"""
+def clean_text(text: str) -> str:
+    """テキストのクレンジング処理"""
+    if pd.isna(text) or text == "":
+        return ""
 
-    @staticmethod
-    def init_session_state():
-        """セッション状態の初期化"""
-        try:
-            if 'initialized' not in st.session_state:
-                st.session_state.initialized = True
-                st.session_state.ui_cache = {}
-                st.session_state.performance_metrics = []
-                st.session_state.user_preferences = {}
-        except Exception:
-            pass
+    # 改行を空白に置換
+    text = str(text).replace('\n', ' ').replace('\r', ' ')
 
-    @staticmethod
-    def get_user_preference(key: str, default: Any = None) -> Any:
-        """ユーザー設定の取得"""
-        return st.session_state.get('user_preferences', {}).get(key, default)
+    # 連続した空白を1つの空白にまとめる
+    text = re.sub(r'\s+', ' ', text)
 
-    @staticmethod
-    def set_user_preference(key: str, value: Any):
-        """ユーザー設定の保存"""
-        if 'user_preferences' not in st.session_state:
-            st.session_state.user_preferences = {}
-        st.session_state.user_preferences[key] = value
+    # 先頭・末尾の空白を除去
+    text = text.strip()
 
-    @staticmethod
-    def clear_cache():
-        """UIキャッシュのクリア"""
-        st.session_state.ui_cache = {}
-        cache.clear()
+    # 引用符の正規化
+    text = text.replace('"', '"').replace('"', '"')
+    text = text.replace(''', "'").replace(''', "'")
 
-    @staticmethod
-    def get_performance_metrics() -> List[Dict[str, Any]]:
-        """パフォーマンスメトリクスの取得"""
-        return st.session_state.get('performance_metrics', [])
+    return text
 
 
-# ==================================================
-# メッセージ管理（Streamlit用）
-# ==================================================
-class MessageManagerUI(MessageManager):
-    """メッセージ履歴の管理（Streamlit UI用）"""
+def combine_columns(row: pd.Series, dataset_type: str = "customer_support_faq") -> str:
+    """複数列を結合して1つのテキストにする"""
+    config_data = RAGConfig.get_config(dataset_type)
+    required_columns = config_data["required_columns"]
 
-    def __init__(self, session_key: str = "message_history"):
-        super().__init__()
-        self.session_key = session_key
-        self._initialize_messages()
+    # 各列からテキストを抽出・クレンジング
+    cleaned_values = {}
+    for col in required_columns:
+        value = row.get(col, '')
+        cleaned_values[col.lower()] = clean_text(str(value))
 
-    def _initialize_messages(self):
-        """メッセージ履歴の初期化"""
-        try:
-            if self.session_key not in st.session_state:
-                st.session_state[self.session_key] = self.get_default_messages()
-        except Exception:
-            # st.session_state may be mocked during tests
-            pass
+    # 結合
+    combined = " ".join(cleaned_values.values())
+    return combined.strip()
 
-    def add_message(self, role: RoleType, content: str):
-        """メッセージの追加"""
-        valid_roles: List[RoleType] = ["user", "assistant", "system", "developer"]
-        if role not in valid_roles:
-            raise ValueError(f"Invalid role: {role}. Must be one of {valid_roles}")
 
-        st.session_state[self.session_key].append(
-            EasyInputMessageParam(role=role, content=content)
-        )
+def validate_data(df: pd.DataFrame, dataset_type: str = None) -> List[str]:
+    """データの検証"""
+    issues = []
 
-        # メッセージ数制限
-        limit = config.get("ui.message_display_limit", 50)
-        if len(st.session_state[self.session_key]) > limit:
-            # 最初のdeveloperメッセージは保持
-            messages = st.session_state[self.session_key]
-            developer_msg = messages[0] if messages and messages[0].get('role') == 'developer' else None
-            st.session_state[self.session_key] = messages[-limit:]
-            if developer_msg and st.session_state[self.session_key][0].get('role') != 'developer':
-                st.session_state[self.session_key].insert(0, developer_msg)
+    # 基本統計
+    issues.append(f"総行数: {len(df)}")
+    issues.append(f"総列数: {len(df.columns)}")
 
-    def get_messages(self) -> List[EasyInputMessageParam]:
-        """メッセージ履歴の取得"""
-        return st.session_state.get(self.session_key, [])
+    # 必須列の確認
+    if dataset_type:
+        config_data = RAGConfig.get_config(dataset_type)
+        required_columns = config_data["required_columns"]
 
-    def clear_messages(self):
-        """メッセージ履歴のクリア"""
-        st.session_state[self.session_key] = self.get_default_messages()
-
-    def import_messages(self, data: Dict[str, Any]):
-        """メッセージ履歴のインポート"""
-        if 'messages' in data:
-            st.session_state[self.session_key] = data['messages']
-
-    def export_messages_ui(self) -> str:
-        """メッセージ履歴のエクスポート（UI用）"""
-        data = self.export_messages()
-        return safe_json_dumps(data)
-
-
-# ==================================================
-# UI ヘルパー（拡張版）
-# ==================================================
-class UIHelper:
-    """Streamlit UI用のヘルパー関数（拡張版）"""
-
-    @staticmethod
-    def init_page(title: str = None, sidebar_title: str = None, **kwargs):
-        """ページの初期化"""
-        # セッション状態の初期化
-        SessionStateManager.init_session_state()
-
-        if title is None:
-            title = config.get("ui.page_title", "OpenAI API Demo")
-        if sidebar_title is None:
-            sidebar_title = "サンプル・メニュー"
-
-        # Streamlit設定
-        page_config = {
-            "page_title"           : title,
-            "page_icon"            : config.get("ui.page_icon", "🤖"),
-            "layout"               : config.get("ui.layout", "wide"),
-            "initial_sidebar_state": "expanded"
-        }
-        page_config.update(kwargs)
-
-        # 既に設定済みかチェック
-        try:
-            st.set_page_config(**page_config)
-        except st.errors.StreamlitAPIException:
-            # 既に設定済みの場合は無視
-            pass
-
-        st.header(title)
-        st.sidebar.title(sidebar_title)
-
-        # デバッグ情報の表示（デバッグモード時）
-        if config.get("experimental.debug_mode", False):
-            UIHelper._show_debug_info()
-
-    @staticmethod
-    def _show_debug_info():
-        """デバッグ情報の表示"""
-        with st.sidebar.expander("🐛 デバッグ情報", expanded=False):
-            st.write("**設定情報**")
-            try:
-                safe_streamlit_json(config._config, expanded=False)
-            except Exception as e:
-                st.error(f"設定表示エラー: {e}")
-
-            st.write("**セッション状態**")
-            try:
-                session_info = {k: str(v)[:100] for k, v in st.session_state.items()}
-                safe_streamlit_json(session_info, expanded=False)
-            except Exception as e:
-                st.error(f"セッション状態表示エラー: {e}")
-
-            st.write("**パフォーマンス**")
-            metrics = SessionStateManager.get_performance_metrics()
-            if metrics:
-                avg_time = sum(m['execution_time'] for m in metrics[-10:]) / min(len(metrics), 10)
-                st.metric("平均実行時間（直近10回）", f"{avg_time:.2f}s")
-
-    @staticmethod
-    def select_model(key: str = "model_selection", category: str = None, show_info: bool = True) -> str:
-        """モデル選択UI（カテゴリ対応）"""
-        models = config.get("models.available", ["gpt-4o", "gpt-4o-mini"])
-        default_model = config.get("models.default", "gpt-4o-mini")
-
-        # カテゴリでフィルタリング
-        if category:
-            if category == "reasoning":
-                models = [m for m in models if m.startswith("o")]
-                st.sidebar.caption("🧠 推論特化モデル")
-            elif category == "standard":
-                models = [m for m in models if m.startswith("gpt")]
-                st.sidebar.caption("💬 標準対話モデル")
-            elif category == "audio":
-                models = [m for m in models if "audio" in m]
-                st.sidebar.caption("🎵 音声対応モデル")
-
-        default_index = models.index(default_model) if default_model in models else 0
-
-        selected = st.sidebar.selectbox(
-            "モデルを選択",
-            models,
-            index=default_index,
-            key=key,
-            help="利用するOpenAIモデルを選択してください"
-        )
-
-        # ユーザー設定として保存
-        SessionStateManager.set_user_preference("selected_model", selected)
-
-        return selected
-
-    @staticmethod
-    def create_input_form(
-            key: str,
-            input_type: str = "text_area",
-            label: str = "入力してください",
-            submit_label: str = "送信",
-            **kwargs
-    ) -> Tuple[str, bool]:
-        """入力フォームの作成"""
-
-        with st.form(key=key):
-            if input_type == "text_area":
-                user_input = st.text_area(
-                    label,
-                    height=kwargs.get("height", config.get("ui.text_area_height", 75)),
-                    **{k: v for k, v in kwargs.items() if k != "height"}
-                )
-            elif input_type == "text_input":
-                user_input = st.text_input(label, **kwargs)
-            elif input_type == "file_uploader":
-                user_input = st.file_uploader(label, **kwargs)
-            else:
-                raise ValueError(f"Unsupported input_type: {input_type}")
-
-            # 送信ボタンの設定
-            col1, col2 = st.columns([3, 1])
-            with col2:
-                submitted = st.form_submit_button(submit_label, use_container_width=True)
-
-            return user_input, submitted
-
-    @staticmethod
-    def display_messages(messages: List[EasyInputMessageParam], show_system: bool = False):
-        """メッセージ履歴の表示（改良版）"""
-        if not messages:
-            st.info("メッセージがありません")
-            return
-
-        for i, msg in enumerate(messages):
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-
-            if role == "user":
-                with st.chat_message("user", avatar="👤"):
-                    if isinstance(content, list):
-                        # マルチモーダルコンテンツの処理
-                        for item in content:
-                            if item.get("type") == "input_text":
-                                st.markdown(item.get("text", ""))
-                            elif item.get("type") == "input_image":
-                                image_url = item.get("image_url", "")
-                                if image_url:
-                                    st.image(image_url, caption="アップロード画像")
-                    else:
-                        st.markdown(content)
-
-            elif role == "assistant":
-                with st.chat_message("assistant", avatar="🤖"):
-                    st.markdown(content)
-
-            elif (role == "developer" or role == "system") and show_system:
-                # with st.expander(f"🔧 {role.capitalize()} Message", expanded=False):
-                # Avoid using expander here to prevent nested expanders when
-                # this function is called inside another expander.
-                with st.container():
-                    st.markdown(f"**🔧 {role.capitalize()} Message**")
-                    st.markdown(f"*{content}*")
-
-    @staticmethod
-    def show_token_info(text: str, model: str = None, position: str = "sidebar"):
-        """トークン情報の表示（拡張版）"""
-        if not text:
-            return
-
-        token_count = TokenManager.count_tokens(text, model)
-        limits = TokenManager.get_model_limits(model)
-
-        # 表示位置の選択
-        container = st.sidebar if position == "sidebar" else st
-
-        with container.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("トークン数", f"{token_count:,}")
-            with col2:
-                usage_percent = (token_count / limits['max_tokens']) * 100
-                st.metric("使用率", f"{usage_percent:.1f}%")
-
-            # コスト推定（仮定: 出力は入力の50%）
-            estimated_output = token_count // 2
-            cost = TokenManager.estimate_cost(token_count, estimated_output, model)
-            st.metric("推定コスト", f"${cost:.6f}")
-
-            # プログレスバー
-            progress_value = min(usage_percent / 100, 1.0)
-            st.progress(progress_value)
-
-            # 警告表示
-            if usage_percent > 90:
-                st.warning("⚠️ トークン使用率が高いです")
-            elif usage_percent > 70:
-                st.info("ℹ️ トークン使用率が高めです")
-
-    @staticmethod
-    def create_tabs(tab_names: List[str], key: str = "tabs") -> List[Any]:
-        """タブの作成"""
-        return st.tabs(tab_names)
-
-    @staticmethod
-    def create_columns(spec: List[Union[int, float]], gap: str = "medium") -> List[Any]:
-        """カラムの作成"""
-        return st.columns(spec, gap=gap)
-
-    @staticmethod
-    def show_metrics(metrics: Dict[str, Any], columns: int = 3):
-        """メトリクスの表示"""
-        cols = st.columns(columns)
-        for i, (label, value) in enumerate(metrics.items()):
-            with cols[i % columns]:
-                if isinstance(value, dict):
-                    st.metric(
-                        label,
-                        value.get('value'),
-                        delta=value.get('delta'),
-                        help=value.get('help')
-                    )
-                else:
-                    st.metric(label, value)
-
-    @staticmethod
-    def create_download_button(
-            data: Any,
-            filename: str,
-            mime_type: str = "text/plain",
-            label: str = "ダウンロード",
-            help: str = None
-    ):
-        """ダウンロードボタンの作成（安全なJSON処理対応）"""
-        try:
-            if isinstance(data, (dict, list)):
-                # 安全なJSONシリアライゼーションを使用
-                data = safe_json_dumps(data)
-                if mime_type == "text/plain":
-                    mime_type = "application/json"
-
-            st.download_button(
-                label=label,
-                data=data,
-                file_name=filename,
-                mime=mime_type,
-                help=help or f"{filename}をダウンロードします"
-            )
-        except Exception as e:
-            st.error(f"ダウンロードボタン作成エラー: {e}")
-            logger.error(f"Download button error: {e}")
-
-    @staticmethod
-    def show_settings_panel():
-        """設定パネルの表示"""
-        with st.sidebar.expander("⚙️ 設定", expanded=False):
-            # テーマ設定
-            theme = st.selectbox(
-                "テーマ",
-                ["auto", "light", "dark"],
-                index=0,
-                help="アプリケーションのテーマを選択"
-            )
-            SessionStateManager.set_user_preference("theme", theme)
-
-            # デバッグモード
-            debug_mode = st.checkbox(
-                "デバッグモード",
-                value=config.get("experimental.debug_mode", False),
-                help="詳細なデバッグ情報を表示"
-            )
-            config.set("experimental.debug_mode", debug_mode)
-
-            # パフォーマンス監視
-            perf_monitoring = st.checkbox(
-                "パフォーマンス監視",
-                value=config.get("experimental.performance_monitoring", True),
-                help="関数の実行時間を記録"
-            )
-            config.set("experimental.performance_monitoring", perf_monitoring)
-
-            # キャッシュ管理
-            st.write("**キャッシュ管理**")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("キャッシュクリア", help="全キャッシュをクリア"):
-                    SessionStateManager.clear_cache()
-                    st.success("キャッシュをクリアしました")
-            with col2:
-                cache_size = cache.size()
-                st.metric("キャッシュ数", cache_size)
-
-    @staticmethod
-    def show_performance_panel():
-        """パフォーマンスパネルの表示"""
-        metrics = SessionStateManager.get_performance_metrics()
-        if not metrics:
-            st.info("パフォーマンスデータがありません")
-            return
-
-        with st.expander("📈 パフォーマンス情報", expanded=False):
-            # 最近の実行時間
-            recent_metrics = metrics[-10:]
-            avg_time = sum(m['execution_time'] for m in recent_metrics) / len(recent_metrics)
-            max_time = max(m['execution_time'] for m in recent_metrics)
-            min_time = min(m['execution_time'] for m in recent_metrics)
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("平均実行時間", f"{avg_time:.2f}s")
-            with col2:
-                st.metric("最大実行時間", f"{max_time:.2f}s")
-            with col3:
-                st.metric("最小実行時間", f"{min_time:.2f}s")
-
-            # 実行時間の推移
-            if len(metrics) > 1:
-                try:
-                    import pandas as pd
-                    df = pd.DataFrame(metrics)
-                    st.line_chart(df.set_index('timestamp')['execution_time'])
-                except ImportError:
-                    st.info("pandas が必要です：pip install pandas")
-                except Exception as e:
-                    st.error(f"チャート表示エラー: {e}")
-
-
-# ==================================================
-# レスポンス処理（UI拡張）
-# ==================================================
-class ResponseProcessorUI(ResponseProcessor):
-    """API レスポンスの処理（UI拡張）"""
-
-    @staticmethod
-    def display_response(response: Response, show_details: bool = True, show_raw: bool = False):
-        """レスポンスの表示（改良版・エラーハンドリング強化）"""
-        texts = ResponseProcessor.extract_text(response)
-
-        if texts:
-            for i, text in enumerate(texts, 1):
-                if len(texts) > 1:
-                    st.subheader(f"🤖 回答 {i}")
-                else:
-                    st.subheader("🤖 回答")
-
-                # コピーボタン付きで表示
-                col1, col2 = st.columns([5, 1])
-                with col1:
-                    st.markdown(text)
-                with col2:
-                    if st.button("📋", key=f"copy_{i}", help="回答をコピー"):
-                        st.write("📋 コピーしました")
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            issues.append(f"⚠️ 必須列が不足: {missing_columns}")
         else:
-            st.warning("⚠️ テキストが見つかりませんでした")
+            issues.append(f"✅ 必須列確認済み: {required_columns}")
 
-        # 詳細情報の表示
-        if show_details:
-            with st.expander("📊 詳細情報", expanded=False):
-                try:
-                    formatted = ResponseProcessor.format_response(response)
+    # 各列の空値確認
+    for col in df.columns:
+        empty_count = df[col].isna().sum() + (df[col] == '').sum()
+        if empty_count > 0:
+            percentage = (empty_count / len(df)) * 100
+            issues.append(f"{col}列: 空値 {empty_count}個 ({percentage:.1f}%)")
 
-                    # 使用状況の表示（安全なアクセス）
-                    usage_data = formatted.get('usage', {})
-                    if usage_data and isinstance(usage_data, dict):
-                        st.write("**トークン使用量**")
+    # 重複行の確認
+    duplicate_count = df.duplicated().sum()
+    if duplicate_count > 0:
+        issues.append(f"⚠️ 重複行: {duplicate_count}個")
+    else:
+        issues.append("✅ 重複行なし")
+
+    return issues
+
+
+def load_dataset(uploaded_file, dataset_type: str = None) -> Tuple[pd.DataFrame, List[str]]:
+    """データセットの読み込みと基本検証"""
+    try:
+        # CSVファイルの読み込み
+        df = pd.read_csv(uploaded_file)
+
+        # 基本検証
+        validation_results = validate_data(df, dataset_type)
+
+        logger.info(f"データセット読み込み完了: {len(df)}行, {len(df.columns)}列")
+        return df, validation_results
+
+    except Exception as e:
+        logger.error(f"データセット読み込みエラー: {e}")
+        raise
+
+
+def process_rag_data(df: pd.DataFrame, dataset_type: str, combine_columns_option: bool = True) -> pd.DataFrame:
+    """RAGデータの前処理を実行"""
+    # 基本的な前処理
+    df_processed = df.copy()
+
+    # 重複行の除去
+    initial_rows = len(df_processed)
+    df_processed = df_processed.drop_duplicates()
+    duplicates_removed = initial_rows - len(df_processed)
+
+    # 空行の除去
+    df_processed = df_processed.dropna(how='all')
+    empty_rows_removed = initial_rows - duplicates_removed - len(df_processed)
+
+    # インデックスのリセット
+    df_processed = df_processed.reset_index(drop=True)
+
+    logger.info(f"前処理完了: 重複除去={duplicates_removed}行, 空行除去={empty_rows_removed}行")
+
+    # 各列のクレンジング
+    config_data = RAGConfig.get_config(dataset_type)
+    required_columns = config_data["required_columns"]
+
+    for col in required_columns:
+        if col in df_processed.columns:
+            df_processed[col] = df_processed[col].apply(clean_text)
+
+    # 列の結合（オプション）
+    if combine_columns_option:
+        df_processed['Combined_Text'] = df_processed.apply(
+            lambda row: combine_columns(row, dataset_type),
+            axis=1
+        )
+
+    return df_processed
+
+
+def create_download_data(df: pd.DataFrame, include_combined: bool = True, dataset_type: str = None) -> Tuple[
+    str, Optional[str]]:
+    """ダウンロード用データの作成"""
+    try:
+        # CSVデータの作成
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False, encoding='utf-8')
+        csv_data = csv_buffer.getvalue()
+
+        # 結合テキストデータの作成
+        text_data = None
+        if include_combined and 'Combined_Text' in df.columns:
+            text_data = df['Combined_Text'].to_string(index=False)
+
+        return csv_data, text_data
+
+    except Exception as e:
+        logger.error(f"create_download_data エラー: {e}")
+        raise
+
+
+def display_statistics(df_original: pd.DataFrame, df_processed: pd.DataFrame, dataset_type: str = None) -> None:
+    """処理前後の統計情報を表示"""
+    st.subheader("📊 統計情報")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("元の行数", len(df_original))
+    with col2:
+        st.metric("処理後の行数", len(df_processed))
+    with col3:
+        removed_rows = len(df_original) - len(df_processed)
+        st.metric("除去された行数", removed_rows)
+
+    # 結合テキストの分析
+    if 'Combined_Text' in df_processed.columns:
+        st.subheader("📝 結合後テキスト分析")
+        text_lengths = df_processed['Combined_Text'].str.len()
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("平均文字数", f"{text_lengths.mean():.0f}")
+        with col2:
+            st.metric("最大文字数", text_lengths.max())
+        with col3:
+            st.metric("最小文字数", text_lengths.min())
+
+
+def estimate_token_usage(df_processed: pd.DataFrame, selected_model: str) -> None:
+    """処理済みデータのトークン使用量推定"""
+    try:
+        if 'Combined_Text' in df_processed.columns:
+            # サンプルテキストでトークン数を推定
+            sample_texts = df_processed['Combined_Text'].head(10).tolist()
+            total_chars = df_processed['Combined_Text'].str.len().sum()
+
+            if sample_texts:
+                sample_text = " ".join(sample_texts)
+                sample_tokens = TokenManager.count_tokens(sample_text, selected_model)
+                sample_chars = len(sample_text)
+
+                if sample_chars > 0:
+                    # 全体のトークン数を推定
+                    estimated_total_tokens = int((total_chars / sample_chars) * sample_tokens)
+
+                    with st.expander("🔢 トークン使用量推定", expanded=False):
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            prompt_tokens = usage_data.get('prompt_tokens', 0)
-                            st.metric("入力", prompt_tokens)
+                            st.metric("推定総トークン数", f"{estimated_total_tokens:,}")
                         with col2:
-                            completion_tokens = usage_data.get('completion_tokens', 0)
-                            st.metric("出力", completion_tokens)
+                            avg_tokens_per_record = estimated_total_tokens / len(df_processed)
+                            st.metric("平均トークン/レコード", f"{avg_tokens_per_record:.0f}")
                         with col3:
-                            total_tokens = usage_data.get('total_tokens', 0)
-                            st.metric("合計", total_tokens)
+                            # embedding用のコスト推定（参考値）
+                            embedding_cost = (estimated_total_tokens / 1000) * 0.0001
+                            st.metric("推定embedding費用", f"${embedding_cost:.4f}")
 
-                        # コスト計算
-                        model = formatted.get('model')
-                        if model and (prompt_tokens > 0 or completion_tokens > 0):
-                            try:
-                                cost = TokenManager.estimate_cost(
-                                    prompt_tokens,
-                                    completion_tokens,
-                                    model
-                                )
-                                st.metric("推定コスト", f"${cost:.6f}")
-                            except Exception as e:
-                                st.error(f"コスト計算エラー: {e}")
+                        st.info(f"💡 選択モデル「{selected_model}」での推定値")
 
-                    # レスポンス情報
-                    st.write("**レスポンス情報**")
-                    info_data = {
-                        "ID"      : formatted.get('id', 'N/A'),
-                        "モデル"  : formatted.get('model', 'N/A'),
-                        "作成日時": formatted.get('created_at', 'N/A')
-                    }
-
-                    for key, value in info_data.items():
-                        st.write(f"- **{key}**: {value}")
-
-                    # Raw JSON表示（安全なJSON処理）
-                    if show_raw:
-                        st.write("**Raw JSON**")
-                        safe_streamlit_json(formatted)
-
-                    # ダウンロードボタン
-                    try:
-                        UIHelper.create_download_button(
-                            formatted,
-                            f"response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                            "application/json",
-                            "📥 JSONダウンロード"
-                        )
-                    except Exception as e:
-                        st.error(f"ダウンロードボタン作成エラー: {e}")
-
-                except Exception as e:
-                    st.error(f"詳細情報表示エラー: {e}")
-                    logger.error(f"Response display error: {e}")
-                    if config.get("experimental.debug_mode", False):
-                        st.exception(e)
+    except Exception as e:
+        logger.error(f"トークン使用量推定エラー: {e}")
+        st.error("トークン使用量の推定に失敗しました")
 
 
 # ==================================================
-# デモ基底クラス
+# ファイル保存関数
 # ==================================================
-class DemoBase(ABC):
-    """デモの基底クラス"""
+def create_output_directory() -> Path:
+    """OUTPUTディレクトリの作成"""
+    try:
+        output_dir = Path("OUTPUT")
+        output_dir.mkdir(exist_ok=True)
 
-    def __init__(self, demo_name: str, title: str = None):
-        self.demo_name = demo_name
-        self.title = title or demo_name
-        self.key_prefix = sanitize_key(demo_name)
-        self.message_manager = MessageManagerUI(f"messages_{self.key_prefix}")
+        # 書き込み権限のテスト
+        test_file = output_dir / ".test_write"
+        try:
+            test_file.write_text("test", encoding='utf-8')
+            if test_file.exists():
+                test_file.unlink()
+                logger.info("書き込み権限テスト: 成功")
+        except Exception as e:
+            raise PermissionError(f"書き込み権限テストに失敗: {e}")
 
-        # セッション状態の初期化
-        SessionStateManager.init_session_state()
+        logger.info(f"OUTPUTディレクトリ準備完了: {output_dir.absolute()}")
+        return output_dir
 
-    @abstractmethod
-    def run(self):
-        """デモの実行（サブクラスで実装）"""
+    except Exception as e:
+        logger.error(f"ディレクトリ作成エラー: {e}")
+        raise
+
+
+def save_files_to_output(df_processed, dataset_type: str, csv_data: str, text_data: str = None) -> Dict[str, str]:
+    """処理済みデータをOUTPUTフォルダに保存"""
+    try:
+        output_dir = create_output_directory()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved_files = {}
+
+        # CSVファイルの保存
+        csv_filename = f"preprocessed_{dataset_type}_{len(df_processed)}rows_{timestamp}.csv"
+        csv_path = output_dir / csv_filename
+
+        with open(csv_path, 'w', encoding='utf-8') as f:
+            f.write(csv_data)
+
+        if csv_path.exists():
+            saved_files['csv'] = str(csv_path)
+            logger.info(f"CSVファイル保存完了: {csv_path}")
+
+        # テキストファイルの保存
+        if text_data and len(text_data.strip()) > 0:
+            txt_filename = f"{dataset_type}.txt"
+            txt_path = output_dir / txt_filename
+
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(text_data)
+
+            if txt_path.exists():
+                saved_files['txt'] = str(txt_path)
+                logger.info(f"テキストファイル保存完了: {txt_path}")
+
+        # メタデータファイルの保存
+        metadata = {
+            "dataset_type"        : dataset_type,
+            "processed_rows"      : len(df_processed),
+            "processing_timestamp": timestamp,
+            "created_at"          : datetime.now().isoformat(),
+            "files_created"       : list(saved_files.keys())
+        }
+
+        metadata_filename = f"metadata_{dataset_type}_{timestamp}.json"
+        metadata_path = output_dir / metadata_filename
+
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+        if metadata_path.exists():
+            saved_files['metadata'] = str(metadata_path)
+            logger.info(f"メタデータファイル保存完了: {metadata_path}")
+
+        return saved_files
+
+    except Exception as e:
+        logger.error(f"ファイル保存エラー: {e}")
+        raise
+
+
+# ==================================================
+# カスタマーサポートFAQ特有の処理関数
+# ==================================================
+def validate_customer_support_data_specific(df) -> List[str]:
+    """カスタマーサポートFAQデータ特有の検証"""
+    support_issues = []
+
+    # サポート関連用語の存在確認
+    support_keywords = [
+        '問題', '解決', 'トラブル', 'エラー', 'サポート', 'ヘルプ', '対応',
+        'problem', 'issue', 'error', 'help', 'support', 'solution', 'troubleshoot'
+    ]
+
+    if 'question' in df.columns:
+        questions_with_support_terms = 0
+        for _, row in df.iterrows():
+            question_text = str(row.get('question', '')).lower()
+            if any(keyword in question_text for keyword in support_keywords):
+                questions_with_support_terms += 1
+
+        support_ratio = (questions_with_support_terms / len(df)) * 100
+        support_issues.append(f"サポート関連用語を含む質問: {questions_with_support_terms}件 ({support_ratio:.1f}%)")
+
+    # 回答の長さ分析
+    if 'answer' in df.columns:
+        answer_lengths = df['answer'].astype(str).str.len()
+        avg_answer_length = answer_lengths.mean()
+        if avg_answer_length < 50:
+            support_issues.append(f"⚠️ 平均回答長が短い可能性: {avg_answer_length:.0f}文字")
+        else:
+            support_issues.append(f"✅ 適切な回答長: 平均{avg_answer_length:.0f}文字")
+
+    return support_issues
+
+
+def show_usage_instructions(dataset_type: str = "customer_support_faq") -> None:
+    """使用方法の説明を表示"""
+    st.markdown("---")
+    st.subheader("📖 使用方法")
+    st.markdown(f"""
+    1. **モデル選択**: サイドバーでRAG用途に適したモデルを選択
+    2. **CSVファイルをアップロード**: question, answer 列を含むCSVファイルを選択
+    3. **前処理を実行**: 以下の処理が自動で実行されます：
+       - 改行の除去
+       - 連続した空白の統一
+       - 重複行の除去
+       - 空行の除去
+       - 引用符の正規化
+    4. **複数列結合**: Vector Store/RAG用に最適化された自然な文章として結合
+    5. **トークン使用量確認**: 選択モデルでのトークン数とコストを推定
+    6. **ダウンロード**: 前処理済みデータをCSV形式でダウンロード
+
+    **Vector Store用最適化:**
+    - 自然な文章として結合（ラベル文字列なし）
+    - OpenAI embeddingモデルに最適化
+    - 検索性能が向上
+    """)
+
+
+# ==================================================
+# メイン処理関数
+# ==================================================
+@error_handler
+def main():
+    """メイン処理関数"""
+
+    # データセットタイプの設定
+    DATASET_TYPE = "customer_support_faq"
+
+    # ページ設定
+    try:
+        st.set_page_config(
+            page_title="カスタマーサポートFAQデータ前処理",
+            page_icon="💬",
+            layout="wide"
+        )
+    except st.errors.StreamlitAPIException:
         pass
 
-    def setup_ui(self):
-        """共通UI設定"""
-        st.subheader(self.title)
+    st.title("💬 カスタマーサポートFAQデータ前処理アプリ")
+    st.markdown("---")
 
-        # モデル選択
-        self.model = UIHelper.select_model(f"model_{self.key_prefix}")
+    # =================================================
+    # モデル選択機能
+    # =================================================
+    st.sidebar.title("💬 カスタマーサポートFAQ")
+    st.sidebar.markdown("---")
 
-        # 設定パネル
-        UIHelper.show_settings_panel()
+    # モデル選択
+    selected_model = select_model(key="rag_model_selection")
 
-        # メッセージ履歴のクリア
-        if st.sidebar.button("🗑️ 履歴クリア", key=f"clear_{self.key_prefix}"):
-            self.message_manager.clear_messages()
-            st.rerun()
+    # 選択されたモデル情報を表示
+    show_model_info(selected_model)
 
-    def display_messages(self):
-        """メッセージの表示"""
-        messages = self.message_manager.get_messages()
-        UIHelper.display_messages(messages)
+    st.sidebar.markdown("---")
+    # =================================================
 
-    def add_user_message(self, content: str):
-        """ユーザーメッセージの追加"""
-        self.message_manager.add_message("user", content)
+    # サイドバー設定
+    st.sidebar.header("前処理設定")
+    combine_columns_option = st.sidebar.checkbox(
+        "複数列を結合する（Vector Store用）",
+        value=True,
+        help="複数列を結合してRAG用テキストを作成"
+    )
+    show_validation = st.sidebar.checkbox(
+        "データ検証を表示",
+        value=True,
+        help="データの品質検証結果を表示"
+    )
 
-    def add_assistant_message(self, content: str):
-        """アシスタントメッセージの追加"""
-        self.message_manager.add_message("assistant", content)
+    # カスタマーサポートデータ特有の設定
+    with st.sidebar.expander("💬 サポートデータ設定", expanded=False):
+        preserve_formatting = st.checkbox(
+            "書式を保護",
+            value=True,
+            help="回答内の重要な書式を保護"
+        )
+        normalize_questions = st.checkbox(
+            "質問を正規化",
+            value=True,
+            help="質問文の表記ゆれを統一"
+        )
 
-    @error_handler_ui
-    @timer_ui
-    def call_api(self, messages: List[EasyInputMessageParam], **kwargs) -> Response:
-        """API呼び出し（共通処理）"""
-        client = OpenAIClient()
+    # ファイルアップロード
+    st.subheader("📁 データファイルのアップロード")
 
-        # デフォルトパラメータ
-        params = {
-            "model": self.model,
-            "input": messages,
-        }
-        params.update(kwargs)
+    # 選択されたモデル情報を表示（メインエリア）
+    with st.expander("📊 選択中のモデル情報", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info(f"🤖 選択モデル: **{selected_model}**")
+        with col2:
+            limits = AppConfig.get_model_limits(selected_model)
+            st.info(f"📏 最大トークン: **{limits['max_tokens']:,}**")
 
-        # API呼び出し
-        response = client.create_response(**params)
-        return response
+    uploaded_file = st.file_uploader(
+        "カスタマーサポートFAQデータのCSVファイルをアップロードしてください",
+        type=['csv'],
+        help="question, answer の2列を含むCSVファイル"
+    )
 
+    if uploaded_file is not None:
+        try:
+            # ファイル情報の確認
+            st.info(f"📁 ファイル: {uploaded_file.name} ({uploaded_file.size:,} bytes)")
 
-# ==================================================
-# 後方互換性のための関数
-# ==================================================
-def init_page(title: str, **kwargs):
-    """後方互換性のための関数"""
-    UIHelper.init_page(title, **kwargs)
+            # セッション状態でファイル処理状況を管理
+            file_key = f"file_{uploaded_file.name}_{uploaded_file.size}"
 
+            # ファイルが変更された場合は再読み込み
+            if st.session_state.get('current_file_key') != file_key:
+                with st.spinner("ファイルを読み込み中..."):
+                    df, validation_results = load_dataset(uploaded_file, DATASET_TYPE)
 
-def init_messages(demo_name: str = ""):
-    """後方互換性のための関数"""
-    manager = MessageManagerUI(f"messages_{sanitize_key(demo_name)}")
+                # セッション状態に保存
+                st.session_state['current_file_key'] = file_key
+                st.session_state['original_df'] = df
+                st.session_state['validation_results'] = validation_results
+                st.session_state['original_rows'] = len(df)
+                st.session_state['file_processed'] = False
 
-    if st.sidebar.button("🗑️ 会話履歴のクリア", key=f"clear_{sanitize_key(demo_name)}"):
-        manager.clear_messages()
+                logger.info(f"新しいファイルを読み込み: {len(df)}行")
+            else:
+                # セッション状態から取得
+                df = st.session_state['original_df']
+                validation_results = st.session_state['validation_results']
+                logger.info(f"セッション状態からファイルを取得: {len(df)}行")
 
+            st.success(f"ファイルが正常に読み込まれました。行数: {len(df)}")
 
-def select_model(demo_name: str = "") -> str:
-    """後方互換性のための関数"""
-    return UIHelper.select_model(f"model_{sanitize_key(demo_name)}")
+            # 元データの表示
+            st.subheader("📋 元データプレビュー")
+            st.dataframe(df.head(10))
 
+            # データ検証結果の表示
+            if show_validation:
+                st.subheader("🔍 データ検証")
 
-def get_default_messages() -> List[EasyInputMessageParam]:
-    """後方互換性のための関数"""
-    manager = MessageManagerUI()
-    return manager.get_default_messages()
+                # 基本検証結果
+                for issue in validation_results:
+                    st.info(issue)
 
+                # カスタマーサポートデータ特有の検証
+                support_issues = validate_customer_support_data_specific(df)
+                if support_issues:
+                    st.write("**カスタマーサポートデータ特有の分析:**")
+                    for issue in support_issues:
+                        st.info(issue)
 
-def extract_text_from_response(response: Response) -> List[str]:
-    """後方互換性のための関数"""
-    return ResponseProcessor.extract_text(response)
+            # 前処理実行
+            st.subheader("⚙️ 前処理実行")
 
+            if st.button("前処理を実行", type="primary", key="process_button"):
+                try:
+                    with st.spinner("前処理中..."):
+                        # RAGデータの前処理
+                        df_processed = process_rag_data(
+                            df.copy(),
+                            DATASET_TYPE,
+                            combine_columns_option
+                        )
 
-def append_user_message(append_text: str, image_url: Optional[str] = None) -> List[EasyInputMessageParam]:
-    """後方互換性のための関数"""
-    messages = get_default_messages()
-    if image_url:
-        content = [
-            ResponseInputTextParam(type="input_text", text=append_text),
-            ResponseInputImageParam(type="input_image", image_url=image_url, detail="auto")
-        ]
-        messages.append(EasyInputMessageParam(role="user", content=content))
-    else:
-        messages.append(EasyInputMessageParam(role="user", content=append_text))
-    return messages
+                    st.success("前処理が完了しました！")
 
-# ==================================================
-# 情報パネル表示クラス
-# ==================================================
-class InfoPanelManager:
-    """左ペインの情報パネル管理"""
+                    # セッション状態に処理済みデータを保存
+                    st.session_state['processed_df'] = df_processed
+                    st.session_state['file_processed'] = True
 
-    @staticmethod
-    def show_model_info(selected_model: str):
-        """モデル情報パネル"""
-        with st.sidebar.expander("📊 モデル情報", expanded=True):
-            # 基本情報
-            limits = TokenManager.get_model_limits(selected_model)
-            pricing = config.get("model_pricing", {}).get(selected_model, {})
+                    # 前処理後のデータ表示
+                    st.subheader("✅ 前処理後のデータプレビュー")
+                    st.dataframe(df_processed.head(10))
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("最大入力", f"{limits['max_tokens']:,}")
-            with col2:
-                st.write("最大出力", f"{limits['max_output']:,}")
+                    # 統計情報の表示
+                    display_statistics(df, df_processed, DATASET_TYPE)
 
-            # 料金情報
-            if pricing:
-                st.write("**料金（1000トークンあたり）**")
-                st.write(f"- 入力: ${pricing.get('input', 0):.5f}")
-                st.write(f"- 出力: ${pricing.get('output', 0):.5f}")
+                    # 選択されたモデルでのトークン使用量推定
+                    estimate_token_usage(df_processed, selected_model)
 
-            # モデル特性
-            if selected_model.startswith("o"):
-                st.info("🧠 推論特化モデル")
-            elif "audio" in selected_model:
-                st.info("🎵 音声対応モデル")
-            elif "gpt-4o" in selected_model:
-                st.info("👁️ 視覚対応モデル")
+                    # カスタマーサポートデータ特有の後処理分析
+                    if 'Combined_Text' in df_processed.columns:
+                        st.subheader("💬 カスタマーサポートデータ特有の分析")
 
-    @staticmethod
-    def show_session_info():
-        """セッション情報パネル"""
-        with st.sidebar.expander("📋 セッション情報", expanded=False):
-            # セッション変数の統計
-            st.write("**アクティブセッション**")
+                        # 結合テキストのサポート用語分析
+                        combined_texts = df_processed['Combined_Text']
+                        support_keywords = ['問題', 'エラー', 'トラブル', 'サポート', 'ヘルプ']
 
-            session_count = len([k for k in st.session_state.keys() if not k.startswith('_')])
-            st.write("セッション変数数", session_count)
+                        keyword_counts = {}
+                        for keyword in support_keywords:
+                            count = combined_texts.str.contains(keyword, case=False).sum()
+                            keyword_counts[keyword] = count
 
-            # メッセージ履歴の情報
-            message_counts = {}
-            for key in st.session_state:
-                if key.startswith("messages_"):
-                    messages = st.session_state[key]
-                    message_counts[key] = len(messages)
+                        if keyword_counts:
+                            st.write("**サポート関連用語の出現頻度:**")
+                            for keyword, count in keyword_counts.items():
+                                percentage = (count / len(df_processed)) * 100
+                                st.write(f"- {keyword}: {count}件 ({percentage:.1f}%)")
 
-            if message_counts:
-                st.write("**メッセージ履歴**")
-                for key, count in list(message_counts.items())[:3]:
-                    demo_name = key.replace("messages_", "")
-                    st.write(f"- {demo_name}: {count}件")
+                        # 質問の長さ分布
+                        if 'question' in df_processed.columns:
+                            question_lengths = df_processed['question'].str.len()
+                            st.write("**質問の長さ統計:**")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("平均質問長", f"{question_lengths.mean():.0f}文字")
+                            with col2:
+                                st.metric("最長質問", f"{question_lengths.max()}文字")
+                            with col3:
+                                st.metric("最短質問", f"{question_lengths.min()}文字")
 
-                if len(message_counts) > 3:
-                    st.write(f"... 他 {len(message_counts) - 3} 個")
+                    logger.info(f"カスタマーサポートFAQデータ処理完了: {len(df)} → {len(df_processed)}行")
 
-    @staticmethod
-    def show_cost_info(selected_model: str):
-        """料金情報パネル"""
-        with st.sidebar.expander("💰 料金計算", expanded=False):
-            pricing = config.get("model_pricing", {}).get(selected_model)
-            if not pricing:
-                st.warning("料金情報が見つかりません")
-                return
+                except Exception as process_error:
+                    st.error(f"前処理エラー: {str(process_error)}")
+                    logger.error(f"前処理エラー: {process_error}")
 
-            st.write("**料金シミュレーター**")
+            # 処理済みデータがある場合のみダウンロード・保存セクションを表示
+            if st.session_state.get('file_processed', False) and 'processed_df' in st.session_state:
+                df_processed = st.session_state['processed_df']
 
-            # 入力フィールド
-            input_tokens = st.number_input(
-                "入力トークン数",
-                min_value=0,
-                value=1000,
-                step=100,
-                key="cost_input_tokens"
-            )
-            output_tokens = st.number_input(
-                "出力トークン数",
-                min_value=0,
-                value=500,
-                step=100,
-                key="cost_output_tokens"
-            )
+                # ダウンロード・保存セクション
+                st.subheader("💾 ダウンロード・保存")
 
-            # コスト計算
-            input_cost = (input_tokens / 1000) * pricing["input"]
-            output_cost = (output_tokens / 1000) * pricing["output"]
-            total_cost = input_cost + output_cost
+                # ダウンロード用データの作成（キャッシュ）
+                if 'download_data' not in st.session_state or st.session_state.get('download_data_key') != file_key:
+                    with st.spinner("ダウンロード用データを準備中..."):
+                        csv_data, text_data = create_download_data(
+                            df_processed,
+                            combine_columns_option,
+                            DATASET_TYPE
+                        )
+                        st.session_state['download_data'] = (csv_data, text_data)
+                        st.session_state['download_data_key'] = file_key
+                else:
+                    csv_data, text_data = st.session_state['download_data']
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("入力コスト", f"${input_cost:.6f}")
-            with col2:
-                st.write("出力コスト", f"${output_cost:.6f}")
-
-            st.write("**総コスト**", f"${total_cost:.6f}")
-
-            # 月間推定
-            daily_calls = st.slider("1日の呼び出し回数", 1, 1000, 100)
-            monthly_cost = total_cost * daily_calls * 30
-            st.info(f"月間推定: ${monthly_cost:.2f}")
-
-    @staticmethod
-    def show_performance_info():
-        """パフォーマンス情報パネル"""
-        metrics = SessionStateManager.get_performance_metrics()
-        if not metrics:
-            return
-
-        with st.sidebar.expander("⚡ パフォーマンス", expanded=False):
-            recent_metrics = metrics[-5:]
-            if recent_metrics:
-                avg_time = sum(m['execution_time'] for m in recent_metrics) / len(recent_metrics)
-                max_time = max(m['execution_time'] for m in recent_metrics)
-                min_time = min(m['execution_time'] for m in recent_metrics)
-
+                # ブラウザダウンロード
+                st.write("**📥 ブラウザダウンロード**")
                 col1, col2 = st.columns(2)
+
                 with col1:
-                    st.write("平均", f"{avg_time:.2f}s")
-                    st.write("最大", f"{max_time:.2f}s")
+                    st.download_button(
+                        label="📊 CSV形式でダウンロード",
+                        data=csv_data,
+                        file_name=f"preprocessed_{DATASET_TYPE}_{len(df_processed)}rows.csv",
+                        mime="text/csv",
+                        help="前処理済みのカスタマーサポートFAQデータをCSV形式でダウンロード"
+                    )
+
                 with col2:
-                    st.write("最小", f"{min_time:.2f}s")
-                    st.write("実行回数", len(metrics))
+                    if text_data:
+                        st.download_button(
+                            label="📝 テキスト形式でダウンロード",
+                            data=text_data,
+                            file_name=f"customer_support_faq.txt",
+                            mime="text/plain",
+                            help="Vector Store/RAG用に最適化された結合テキスト"
+                        )
 
-                latest = recent_metrics[-1]
-                st.write(f"**最新実行**: {latest['function']} ({latest['execution_time']:.2f}s)")
+                # ローカル保存
+                st.write("**💾 ローカルファイル保存（OUTPUTフォルダ）**")
 
-    @staticmethod
-    def show_debug_panel():
-        """デバッグパネル"""
-        if not config.get("experimental.debug_mode", False):
-            return
+                if st.button("🔄 OUTPUTフォルダに保存", type="secondary", key="save_button"):
+                    try:
+                        with st.spinner("ファイル保存中..."):
+                            saved_files = save_files_to_output(
+                                df_processed,
+                                DATASET_TYPE,
+                                csv_data,
+                                text_data
+                            )
 
-        with st.sidebar.expander("🐛 デバッグ情報", expanded=False):
-            st.write("**アクティブ設定**")
-            debug_config = {
-                "default_model": config.get("models.default"),
-                "cache_enabled": config.get("cache.enabled"),
-                "debug_mode": config.get("experimental.debug_mode"),
-                "performance_monitoring": config.get("experimental.performance_monitoring"),
-            }
+                        if saved_files:
+                            st.success("✅ ファイル保存完了！")
 
-            for key, value in debug_config.items():
-                st.write(f"- {key}: `{value}`")
+                            # 保存されたファイル一覧を表示
+                            with st.expander("📂 保存されたファイル一覧", expanded=True):
+                                for file_type, file_path in saved_files.items():
+                                    if Path(file_path).exists():
+                                        file_size = Path(file_path).stat().st_size
+                                        st.write(f"**{file_type.upper()}**: `{file_path}` ({file_size:,} bytes) ✅")
+                                    else:
+                                        st.write(f"**{file_type.upper()}**: `{file_path}` ❌ ファイルが見つかりません")
 
-            current_level = config.get("logging.level", "INFO")
-            new_level = st.selectbox(
-                "ログレベル",
-                ["DEBUG", "INFO", "WARNING", "ERROR"],
-                index=["DEBUG", "INFO", "WARNING", "ERROR"].index(current_level)
-            )
-            if new_level != current_level:
-                config.set("logging.level", new_level)
-                logger.setLevel(getattr(logger, new_level))
+                                # OUTPUTフォルダの場所を表示
+                                output_path = Path("OUTPUT").resolve()
+                                st.write(f"**保存場所**: `{output_path}`")
+                                file_count = len(list(output_path.glob("*")))
+                                st.write(f"**フォルダ内ファイル数**: {file_count}個")
+                        else:
+                            st.error("❌ ファイル保存に失敗しました")
 
-            st.write(f"**キャッシュ**: {cache.size()} エントリ")
-            if st.button("🗑️ キャッシュクリア"):
-                cache.clear()
-                st.success("キャッシュをクリアしました")
+                    except Exception as save_error:
+                        st.error(f"❌ ファイル保存エラー: {str(save_error)}")
+                        logger.error(f"保存エラー: {save_error}")
 
-    @staticmethod
-    def show_settings():
-        """設定パネル"""
-        with st.sidebar.expander("⚙️ 設定", expanded=False):
-            # デバッグモード
-            debug_mode = st.checkbox(
-                "デバッグモード",
-                value=config.get("experimental.debug_mode", False),
-                key="setting_debug_mode"
-            )
-            if debug_mode != config.get("experimental.debug_mode", False):
-                config.set("experimental.debug_mode", debug_mode)
-                st.rerun()
+        except Exception as e:
+            st.error(f"エラーが発生しました: {str(e)}")
+            logger.error(f"ファイル読み込みエラー: {e}")
 
-            # パフォーマンス監視
-            perf_monitoring = st.checkbox(
-                "パフォーマンス監視",
-                value=config.get("experimental.performance_monitoring", True),
-                key="setting_perf_monitoring"
-            )
-            config.set("experimental.performance_monitoring", perf_monitoring)
+    else:
+        st.info("👆 CSVファイルをアップロードしてください")
 
-            # キャッシュ管理
-            st.write("**キャッシュ管理**")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("キャッシュクリア", key="clear_cache"):
-                    if 'cache' in st.session_state:
-                        st.session_state.cache = {}
-                    st.success("クリア完了")
-            with col2:
-                cache_size = len(st.session_state.get('cache', {}))
-                st.write("サイズ", cache_size)
+    # 使用方法の説明
+    show_usage_instructions(DATASET_TYPE)
 
-            # 表示設定
-            st.write("**表示設定**")
-            show_timestamps = st.checkbox(
-                "タイムスタンプ表示",
-                value=st.session_state.get('show_timestamps', True),
-                key="setting_timestamps"
-            )
-            st.session_state.show_timestamps = show_timestamps
+    # セッション状態の表示（デバッグ用）
+    if st.sidebar.checkbox("🔧 セッション状態を表示", value=False):
+        with st.sidebar.expander("セッション状態", expanded=False):
+            st.write(f"**選択モデル**: {selected_model}")
+            st.write(f"**ファイル処理済み**: {st.session_state.get('file_processed', False)}")
+
+            if 'original_df' in st.session_state:
+                df = st.session_state['original_df']
+                st.write(f"**元データ**: {len(df)}行")
+
+            if 'processed_df' in st.session_state:
+                df_processed = st.session_state['processed_df']
+                st.write(f"**処理済みデータ**: {len(df_processed)}行")
 
 
 # ==================================================
-# エクスポート
+# アプリケーション実行
 # ==================================================
-__all__ = [
-    # クラス
-    'UIHelper',
-    'MessageManagerUI',
-    'ResponseProcessorUI',
-    'DemoBase',
-    'SessionStateManager',
+if __name__ == "__main__":
+    main()
 
-    # デコレータ
-    'error_handler_ui',
-    'timer_ui',
-    'cache_result_ui',
-
-    # ユーティリティ
-    'safe_streamlit_json',
-
-    # 後方互換性
-    'init_page',
-    'init_messages',
-    'select_model',
-    'get_default_messages',
-    'extract_text_from_response',
-    'append_user_message',
-]
+# 実行コマンド:
+# streamlit run a30_011_make_rag_data_customer.py --server.port=8501
