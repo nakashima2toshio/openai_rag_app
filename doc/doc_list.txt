@@ -6,6 +6,22 @@ medical_qa.csv              ③ 医療質問回答データセット
 sciq_qa.csv                 ④ 科学・技術QAデータセット
 legal_qa.csv                ⑤ 法律・判例QAデータセット
 
+
+combined_customer_support_faq_89rows_20250720_053343.txt
+combined_medical_qa_19704rows_20250720_054931.txt
+combined_sciq_qa_11679rows_20250720_055449.txt
+combined_legal_qa_4rows_20250720_060737.txt
+
+customer_support_faq.txt
+medical_qa.txt
+sciq_qa.txt
+legal_qa.txt
+
+# ----------------------------------------------
+
+下記仕様で設計書を作成せよ。
+不足情報があれば、指摘せよ。
+
 仕様書：
 概要書
 ・処理の概要
@@ -18,5 +34,12 @@ legal_qa.csv                ⑤ 法律・判例QAデータセット
 ・処理概要
 ・処理の流れ
 ・IPO(INPUT、PROCESS、OUTPUT)
+
+----------------------------------
+Legal Q&A: vs_687a062418ec8191872efdbf8f554836
+Science & Technology Q&A: vs_687a061acc908191af7d5d9ba623470b
+Medical Q&A: vs_687a060f9ed881918b213bfdeab8241b
+Customer Support FAQ: vs_687a0604f1508191aaf416d88e266ab7
+----------
 
 
