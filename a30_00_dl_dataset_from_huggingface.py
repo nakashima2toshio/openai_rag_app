@@ -1,4 +1,4 @@
-# python a30_00_rag_dataset_from_huggingface.py
+# [USAGE] python a30_00_rag_dataset_from_huggingface.py
 # --------------------------------------------------
 # ① カスタマーサポート・FAQデータセット   推奨データセット： Amazon_Polarity
 # ② 一般知識・トリビアQAデータセット      推奨データセット： trivia_qa
@@ -103,11 +103,6 @@ def show_dataset():
         print("\n" + "=" * 50 + "\n")
     except Exception as e:
         print(f"CSVファイルの読み込みエラー: {e}")
-
-    # ② 一般知識・トリビアQAデータセット      推奨データセット： trivia_qa
-    # ③ 医療質問回答データセット             推奨データセット： FreedomIntelligence/medical-o1-reasoning-SFT
-    # ④ 科学・技術QAデータセット             推奨データセット： sciq
-    # ⑤ 法律・判例QAデータセット             推奨データセット： nguha/legalbench
 
 
 def main():

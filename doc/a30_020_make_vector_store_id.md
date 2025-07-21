@@ -6,6 +6,29 @@
 
 4つの異なるデータセット（カスタマーサポートFAQ、医療QA、科学・技術QA、法律・判例QA）のテキストファイルを読み込み、OpenAI Vector Storeに登録するバッチ処理プログラム。各データセットを適切なチャンクサイズで分割し、JSONL形式に変換してOpenAI APIを通じてVector Storeを作成する。
 
+** [処理の流れ]
+```python
+# Step 1: ファイル読み込み
+text_lines = load_text_file(filepath)
+
+# Step 2: JSONL形式に変換
+jsonl_data = text_to_jsonl_data(text_lines, dataset_type)
+
+# Step 3: Vector Store作成
+store_name = config["store_name"]
+vector_store_id = create_vector_store_from_jsonl_data(jsonl_data, store_name)
+```
+
+```python
+# Step 1: ファイルをOpenAIにアップロード
+uploaded_file = client.files.create(
+    file=file,
+    purpose="assistants"
+)
+uploaded_file_id = uploaded_file.id
+```
+
+
 **主要機能:**
 
 - 複数データセットのバッチ処理
