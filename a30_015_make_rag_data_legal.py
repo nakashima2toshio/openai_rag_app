@@ -1,574 +1,30 @@
 # a30_015_make_rag_data_legal.py
-# 法律・判例QAデータのRAG前処理（完全独立版）
+# 法律・判例QAデータのRAG前処理（helper_rag.py利用版）
 # streamlit run a30_015_make_rag_data_legal.py --server.port=8505
 
 import streamlit as st
 import pandas as pd
-import re
-import io
 import logging
-import json
-import os
-from typing import List, Dict, Any, Optional, Tuple
+import re
+from typing import List
 from pathlib import Path
-from datetime import datetime
-from functools import wraps
+
+# 共通機能のインポート
+from helper_rag import (
+    AppConfig, RAGConfig, TokenManager, safe_execute,
+    select_model, show_model_info, estimate_token_usage,
+    validate_data, load_dataset, process_rag_data,
+    create_download_data, display_statistics, save_files_to_output,
+    show_usage_instructions, setup_page_config, setup_page_header, setup_sidebar_header
+)
 
 # ===================================================================
-# 完全独立版：外部ヘルパーモジュールへの依存なし
+# helper_rag.py を利用した改修版
 # ===================================================================
 
 # 基本ログ設定
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-# ==================================================
-# 設定管理クラス
-# ==================================================
-class AppConfig:
-    """アプリケーション設定（完全独立実装）"""
-
-    # 利用可能なモデル
-    AVAILABLE_MODELS = [
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-4o-audio-preview",
-        "gpt-4o-mini-audio-preview",
-        "gpt-4.1",
-        "gpt-4.1-mini",
-        "o1",
-        "o1-mini",
-        "o3",
-        "o3-mini",
-        "o4",
-        "o4-mini"
-    ]
-
-    DEFAULT_MODEL = "gpt-4o-mini"
-
-    # モデル料金（1000トークンあたりのドル）
-    MODEL_PRICING = {
-        "gpt-4o"                   : {"input": 0.005, "output": 0.015},
-        "gpt-4o-mini"              : {"input": 0.00015, "output": 0.0006},
-        "gpt-4o-audio-preview"     : {"input": 0.01, "output": 0.02},
-        "gpt-4o-mini-audio-preview": {"input": 0.00025, "output": 0.001},
-        "gpt-4.1"                  : {"input": 0.0025, "output": 0.01},
-        "gpt-4.1-mini"             : {"input": 0.0001, "output": 0.0004},
-        "o1"                       : {"input": 0.015, "output": 0.06},
-        "o1-mini"                  : {"input": 0.003, "output": 0.012},
-        "o3"                       : {"input": 0.03, "output": 0.12},
-        "o3-mini"                  : {"input": 0.006, "output": 0.024},
-        "o4"                       : {"input": 0.05, "output": 0.20},
-        "o4-mini"                  : {"input": 0.01, "output": 0.04},
-    }
-
-    # モデル制限
-    MODEL_LIMITS = {
-        "gpt-4o"                   : {"max_tokens": 128000, "max_output": 4096},
-        "gpt-4o-mini"              : {"max_tokens": 128000, "max_output": 4096},
-        "gpt-4o-audio-preview"     : {"max_tokens": 128000, "max_output": 4096},
-        "gpt-4o-mini-audio-preview": {"max_tokens": 128000, "max_output": 4096},
-        "gpt-4.1"                  : {"max_tokens": 128000, "max_output": 4096},
-        "gpt-4.1-mini"             : {"max_tokens": 128000, "max_output": 4096},
-        "o1"                       : {"max_tokens": 128000, "max_output": 32768},
-        "o1-mini"                  : {"max_tokens": 128000, "max_output": 65536},
-        "o3"                       : {"max_tokens": 200000, "max_output": 100000},
-        "o3-mini"                  : {"max_tokens": 200000, "max_output": 100000},
-        "o4"                       : {"max_tokens": 256000, "max_output": 128000},
-        "o4-mini"                  : {"max_tokens": 256000, "max_output": 128000},
-    }
-
-    @classmethod
-    def get_model_limits(cls, model: str) -> Dict[str, int]:
-        """モデルの制限を取得"""
-        return cls.MODEL_LIMITS.get(model, {"max_tokens": 128000, "max_output": 4096})
-
-    @classmethod
-    def get_model_pricing(cls, model: str) -> Dict[str, float]:
-        """モデルの料金を取得"""
-        return cls.MODEL_PRICING.get(model, {"input": 0.00015, "output": 0.0006})
-
-
-# ==================================================
-# RAG設定クラス
-# ==================================================
-class RAGConfig:
-    """RAGデータ前処理の設定"""
-
-    DATASET_CONFIGS = {
-        "legal_qa": {
-            "name"            : "法律・判例QA",
-            "icon"            : "⚖️",
-            "required_columns": ["question", "answer"],
-            "description"     : "法律・判例質問回答データセット",
-            "combine_template": "{question} {answer}"
-        },
-        "customer_support_faq": {
-            "name"            : "カスタマーサポート・FAQ",
-            "icon"            : "💬",
-            "required_columns": ["question", "answer"],
-            "description"     : "カスタマーサポートFAQデータセット",
-            "combine_template": "{question} {answer}"
-        }
-    }
-
-    @classmethod
-    def get_config(cls, dataset_type: str) -> Dict[str, Any]:
-        """データセット設定の取得"""
-        return cls.DATASET_CONFIGS.get(dataset_type, {
-            "name"            : "未知のデータセット",
-            "icon"            : "❓",
-            "required_columns": [],
-            "description"     : "未知のデータセット",
-            "combine_template": "{}"
-        })
-
-
-# ==================================================
-# トークン管理クラス
-# ==================================================
-class TokenManager:
-    """トークン数の管理（簡易版）"""
-
-    @staticmethod
-    def count_tokens(text: str, model: str = None) -> int:
-        """テキストのトークン数をカウント（簡易推定）"""
-        if not text:
-            return 0
-
-        # 簡易推定: 日本語文字は0.5トークン、英数字は0.25トークン
-        japanese_chars = len([c for c in text if ord(c) > 127])
-        english_chars = len(text) - japanese_chars
-        estimated_tokens = int(japanese_chars * 0.5 + english_chars * 0.25)
-
-        # 最低1トークンは必要
-        return max(1, estimated_tokens)
-
-    @staticmethod
-    def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
-        """API使用コストの推定"""
-        pricing = AppConfig.get_model_pricing(model)
-        input_cost = (input_tokens / 1000) * pricing["input"]
-        output_cost = (output_tokens / 1000) * pricing["output"]
-        return input_cost + output_cost
-
-
-# ==================================================
-# エラーハンドリングデコレータ
-# ==================================================
-def safe_execute(func):
-    """安全実行デコレータ"""
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"Error in {func.__name__}: {str(e)}")
-            st.error(f"エラーが発生しました: {str(e)}")
-            return None
-
-    return wrapper
-
-
-# ==================================================
-# UI関数群
-# ==================================================
-def select_model(key: str = "model_selection") -> str:
-    """モデル選択UI"""
-    models = AppConfig.AVAILABLE_MODELS
-    default_model = AppConfig.DEFAULT_MODEL
-
-    try:
-        default_index = models.index(default_model)
-    except ValueError:
-        default_index = 0
-
-    selected = st.sidebar.selectbox(
-        "🤖 モデルを選択",
-        models,
-        index=default_index,
-        key=key,
-        help="利用するOpenAIモデルを選択してください"
-    )
-
-    return selected
-
-
-def show_model_info(selected_model: str) -> None:
-    """選択されたモデルの情報を表示"""
-    try:
-        limits = AppConfig.get_model_limits(selected_model)
-        pricing = AppConfig.get_model_pricing(selected_model)
-
-        with st.sidebar.expander("📊 選択モデル情報", expanded=False):
-            # 基本情報
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**最大入力**")
-                st.write(f"{limits['max_tokens']:,}")
-            with col2:
-                st.write("**最大出力**")
-                st.write(f"{limits['max_output']:,}")
-
-            # 料金情報
-            st.write("**料金（1000トークン）**")
-            st.write(f"- 入力: ${pricing['input']:.5f}")
-            st.write(f"- 出力: ${pricing['output']:.5f}")
-
-            # モデル特性
-            if selected_model.startswith("o"):
-                st.info("🧠 推論特化モデル")
-                st.caption("高度な推論タスクに最適化")
-            elif "audio" in selected_model:
-                st.info("🎵 音声対応モデル")
-                st.caption("音声入力・出力に対応")
-            elif "gpt-4o" in selected_model:
-                st.info("👁️ マルチモーダルモデル")
-                st.caption("テキスト・画像の理解が可能")
-            else:
-                st.info("💬 標準対話モデル")
-                st.caption("一般的な対話・テキスト処理")
-
-            # RAG用途での推奨度
-            st.write("**RAG用途推奨度**")
-            if selected_model in ["gpt-4o-mini", "gpt-4.1-mini"]:
-                st.success("✅ 最適（コスト効率良好）")
-            elif selected_model in ["gpt-4o", "gpt-4.1"]:
-                st.info("💡 高品質（コスト高）")
-            elif selected_model.startswith("o"):
-                st.warning("⚠️ 推論特化（RAG用途には過剰）")
-            else:
-                st.info("💬 標準的な性能")
-
-    except Exception as e:
-        logger.error(f"モデル情報表示エラー: {e}")
-        st.sidebar.error("モデル情報の取得に失敗しました")
-
-
-def estimate_token_usage(df_processed: pd.DataFrame, selected_model: str) -> None:
-    """処理済みデータのトークン使用量推定"""
-    try:
-        if 'Combined_Text' in df_processed.columns:
-            # サンプルテキストでトークン数を推定
-            sample_size = min(10, len(df_processed))
-            sample_texts = df_processed['Combined_Text'].head(sample_size).tolist()
-            total_chars = df_processed['Combined_Text'].str.len().sum()
-
-            if sample_texts:
-                sample_text = " ".join(sample_texts)
-                sample_tokens = TokenManager.count_tokens(sample_text, selected_model)
-                sample_chars = len(sample_text)
-
-                if sample_chars > 0:
-                    # 全体のトークン数を推定
-                    estimated_total_tokens = int((total_chars / sample_chars) * sample_tokens)
-
-                    with st.expander("🔢 トークン使用量推定", expanded=False):
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("推定総トークン数", f"{estimated_total_tokens:,}")
-                        with col2:
-                            avg_tokens_per_record = estimated_total_tokens / len(df_processed)
-                            st.metric("平均トークン/レコード", f"{avg_tokens_per_record:.0f}")
-                        with col3:
-                            # embedding用のコスト推定（参考値）
-                            embedding_cost = (estimated_total_tokens / 1000) * 0.0001
-                            st.metric("推定embedding費用", f"${embedding_cost:.4f}")
-
-                        st.info(f"💡 選択モデル「{selected_model}」での推定値")
-                        st.caption("※ 実際のトークン数とは異なる場合があります")
-
-    except Exception as e:
-        logger.error(f"トークン使用量推定エラー: {e}")
-        st.error("トークン使用量の推定に失敗しました")
-
-
-# ==================================================
-# データ処理関数群
-# ==================================================
-def clean_text(text: str) -> str:
-    """テキストのクレンジング処理"""
-    if pd.isna(text) or text == "":
-        return ""
-
-    # 文字列に変換
-    text = str(text)
-
-    # 改行を空白に置換
-    text = text.replace('\n', ' ').replace('\r', ' ')
-
-    # 連続した空白を1つの空白にまとめる
-    text = re.sub(r'\s+', ' ', text)
-
-    # 先頭・末尾の空白を除去
-    text = text.strip()
-
-    # 引用符の正規化
-    text = text.replace('"', '"').replace('"', '"')
-    text = text.replace(''', "'").replace(''', "'")
-
-    return text
-
-
-def combine_columns(row: pd.Series, dataset_type: str = "legal_qa") -> str:
-    """複数列を結合して1つのテキストにする"""
-    config_data = RAGConfig.get_config(dataset_type)
-    required_columns = config_data["required_columns"]
-
-    # 各列からテキストを抽出・クレンジング
-    cleaned_values = []
-    for col in required_columns:
-        if col in row.index:
-            value = row.get(col, '')
-            cleaned_text = clean_text(str(value))
-            if cleaned_text:  # 空でない場合のみ追加
-                cleaned_values.append(cleaned_text)
-
-    # 結合
-    combined = " ".join(cleaned_values)
-    return combined.strip()
-
-
-def validate_data(df: pd.DataFrame, dataset_type: str = None) -> List[str]:
-    """データの検証"""
-    issues = []
-
-    # 基本統計
-    issues.append(f"総行数: {len(df):,}")
-    issues.append(f"総列数: {len(df.columns)}")
-
-    # 必須列の確認
-    if dataset_type:
-        config_data = RAGConfig.get_config(dataset_type)
-        required_columns = config_data["required_columns"]
-
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            issues.append(f"⚠️ 必須列が不足: {missing_columns}")
-        else:
-            issues.append(f"✅ 必須列確認済み: {required_columns}")
-
-    # 各列の空値確認
-    for col in df.columns:
-        empty_count = df[col].isna().sum() + (df[col] == '').sum()
-        if empty_count > 0:
-            percentage = (empty_count / len(df)) * 100
-            issues.append(f"{col}列: 空値 {empty_count:,}個 ({percentage:.1f}%)")
-
-    # 重複行の確認
-    duplicate_count = df.duplicated().sum()
-    if duplicate_count > 0:
-        issues.append(f"⚠️ 重複行: {duplicate_count:,}個")
-    else:
-        issues.append("✅ 重複行なし")
-
-    return issues
-
-
-@safe_execute
-def load_dataset(uploaded_file, dataset_type: str = None) -> Tuple[pd.DataFrame, List[str]]:
-    """データセットの読み込みと基本検証"""
-    # CSVファイルの読み込み
-    df = pd.read_csv(uploaded_file)
-
-    # 基本検証
-    validation_results = validate_data(df, dataset_type)
-
-    logger.info(f"データセット読み込み完了: {len(df):,}行, {len(df.columns)}列")
-    return df, validation_results
-
-
-@safe_execute
-def process_rag_data(df: pd.DataFrame, dataset_type: str, combine_columns_option: bool = True) -> pd.DataFrame:
-    """RAGデータの前処理を実行"""
-    # 基本的な前処理
-    df_processed = df.copy()
-
-    # 重複行の除去
-    initial_rows = len(df_processed)
-    df_processed = df_processed.drop_duplicates()
-    duplicates_removed = initial_rows - len(df_processed)
-
-    # 空行の除去（全列がNAの行）
-    df_processed = df_processed.dropna(how='all')
-    empty_rows_removed = initial_rows - duplicates_removed - len(df_processed)
-
-    # インデックスのリセット
-    df_processed = df_processed.reset_index(drop=True)
-
-    logger.info(f"前処理完了: 重複除去={duplicates_removed:,}行, 空行除去={empty_rows_removed:,}行")
-
-    # 各列のクレンジング
-    config_data = RAGConfig.get_config(dataset_type)
-    required_columns = config_data["required_columns"]
-
-    for col in required_columns:
-        if col in df_processed.columns:
-            df_processed[col] = df_processed[col].apply(clean_text)
-
-    # 列の結合（オプション）
-    if combine_columns_option:
-        df_processed['Combined_Text'] = df_processed.apply(
-            lambda row: combine_columns(row, dataset_type),
-            axis=1
-        )
-
-        # 空の結合テキストを除去
-        before_filter = len(df_processed)
-        df_processed = df_processed[df_processed['Combined_Text'].str.strip() != '']
-        after_filter = len(df_processed)
-        empty_combined_removed = before_filter - after_filter
-
-        if empty_combined_removed > 0:
-            logger.info(f"空の結合テキストを除去: {empty_combined_removed:,}行")
-
-    return df_processed
-
-
-@safe_execute
-def create_download_data(df: pd.DataFrame, include_combined: bool = True, dataset_type: str = None) -> Tuple[
-    str, Optional[str]]:
-    """ダウンロード用データの作成"""
-    # CSVデータの作成
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False, encoding='utf-8')
-    csv_data = csv_buffer.getvalue()
-
-    # 結合テキストデータの作成
-    text_data = None
-    if include_combined and 'Combined_Text' in df.columns:
-        # インデックスなしで結合テキストのみを出力
-        text_lines = []
-        for text in df['Combined_Text']:
-            if text and str(text).strip():
-                text_lines.append(str(text).strip())
-        text_data = '\n'.join(text_lines)
-
-    return csv_data, text_data
-
-
-def display_statistics(df_original: pd.DataFrame, df_processed: pd.DataFrame, dataset_type: str = None) -> None:
-    """処理前後の統計情報を表示"""
-    st.subheader("📊 統計情報")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric("元の行数", f"{len(df_original):,}")
-    with col2:
-        st.metric("処理後の行数", f"{len(df_processed):,}")
-    with col3:
-        removed_rows = len(df_original) - len(df_processed)
-        st.metric("除去された行数", f"{removed_rows:,}")
-
-    # 結合テキストの分析
-    if 'Combined_Text' in df_processed.columns:
-        st.subheader("📝 結合後テキスト分析")
-        text_lengths = df_processed['Combined_Text'].str.len()
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("平均文字数", f"{text_lengths.mean():.0f}")
-        with col2:
-            st.metric("最大文字数", f"{text_lengths.max():,}")
-        with col3:
-            st.metric("最小文字数", f"{text_lengths.min():,}")
-
-        # パーセンタイル表示
-        percentiles = text_lengths.quantile([0.25, 0.5, 0.75])
-        st.write("**文字数分布:**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.write(f"25%点: {percentiles[0.25]:.0f}文字")
-        with col2:
-            st.write(f"中央値: {percentiles[0.5]:.0f}文字")
-        with col3:
-            st.write(f"75%点: {percentiles[0.75]:.0f}文字")
-
-
-# ==================================================
-# ファイル保存関数群
-# ==================================================
-def create_output_directory() -> Path:
-    """OUTPUTディレクトリの作成"""
-    try:
-        output_dir = Path("OUTPUT")
-        output_dir.mkdir(exist_ok=True)
-
-        # 書き込み権限のテスト
-        test_file = output_dir / ".test_write"
-        try:
-            test_file.write_text("test", encoding='utf-8')
-            if test_file.exists():
-                test_file.unlink()
-                logger.info("書き込み権限テスト: 成功")
-        except Exception as e:
-            raise PermissionError(f"書き込み権限テストに失敗: {e}")
-
-        logger.info(f"OUTPUTディレクトリ準備完了: {output_dir.absolute()}")
-        return output_dir
-
-    except Exception as e:
-        logger.error(f"ディレクトリ作成エラー: {e}")
-        raise
-
-
-@safe_execute
-def save_files_to_output(df_processed, dataset_type: str, csv_data: str, text_data: str = None) -> Dict[str, str]:
-    """処理済みデータをOUTPUTフォルダに保存"""
-    output_dir = create_output_directory()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    saved_files = {}
-
-    # CSVファイルの保存
-    csv_filename = f"preprocessed_{dataset_type}_{len(df_processed)}rows_{timestamp}.csv"
-    csv_path = output_dir / csv_filename
-
-    with open(csv_path, 'w', encoding='utf-8') as f:
-        f.write(csv_data)
-
-    if csv_path.exists():
-        saved_files['csv'] = str(csv_path)
-        logger.info(f"CSVファイル保存完了: {csv_path}")
-
-    # テキストファイルの保存
-    if text_data and len(text_data.strip()) > 0:
-        txt_filename = f"{dataset_type}.txt"
-        txt_path = output_dir / txt_filename
-
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(text_data)
-
-        if txt_path.exists():
-            saved_files['txt'] = str(txt_path)
-            logger.info(f"テキストファイル保存完了: {txt_path}")
-
-    # メタデータファイルの保存
-    metadata = {
-        "dataset_type"        : dataset_type,
-        "processed_rows"      : len(df_processed),
-        "processing_timestamp": timestamp,
-        "created_at"          : datetime.now().isoformat(),
-        "files_created"       : list(saved_files.keys()),
-        "processing_info"     : {
-            "original_rows": st.session_state.get('original_rows', 0),
-            "removed_rows" : st.session_state.get('original_rows', 0) - len(df_processed)
-        }
-    }
-
-    metadata_filename = f"metadata_{dataset_type}_{timestamp}.json"
-    metadata_path = output_dir / metadata_filename
-
-    with open(metadata_path, 'w', encoding='utf-8') as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
-
-    if metadata_path.exists():
-        saved_files['metadata'] = str(metadata_path)
-        logger.info(f"メタデータファイル保存完了: {metadata_path}")
-
-    return saved_files
 
 
 # ==================================================
@@ -585,10 +41,17 @@ def validate_legal_data_specific(df) -> List[str]:
         'law', 'legal', 'court', 'judge', 'civil', 'criminal', 'contract', 'liability'
     ]
 
-    if 'question' in df.columns:
+    # 大文字小文字を考慮した列名検索
+    question_col = None
+    for col in df.columns:
+        if 'question' in col.lower():
+            question_col = col
+            break
+
+    if question_col is not None:
         questions_with_legal_terms = 0
         for _, row in df.iterrows():
-            question_text = str(row.get('question', '')).lower()
+            question_text = str(row.get(question_col, '')).lower()
             if any(keyword in question_text for keyword in legal_keywords):
                 questions_with_legal_terms += 1
 
@@ -596,63 +59,57 @@ def validate_legal_data_specific(df) -> List[str]:
         legal_issues.append(f"法律関連用語を含む質問: {questions_with_legal_terms:,}件 ({legal_ratio:.1f}%)")
 
     # 回答の長さ分析（法律回答は通常詳細で長い）
-    if 'answer' in df.columns:
-        answer_lengths = df['answer'].astype(str).str.len()
+    answer_col = None
+    for col in df.columns:
+        if 'answer' in col.lower():
+            answer_col = col
+            break
+
+    if answer_col is not None:
+        answer_lengths = df[answer_col].astype(str).str.len()
         avg_answer_length = answer_lengths.mean()
         if avg_answer_length < 100:
             legal_issues.append(f"⚠️ 平均回答長が短い可能性: {avg_answer_length:.0f}文字")
         else:
             legal_issues.append(f"✅ 適切な回答長: 平均{avg_answer_length:.0f}文字")
 
-    # 判例番号や条文参照の確認（簡易版）
-    if 'answer' in df.columns:
-        reference_patterns = ['第.*条', '民法.*条', '刑法.*条', '判例', '最判', '東京地判', '大阪高判']
-        answers_with_references = 0
+        # 詳細な回答長分析
+        short_answers = (answer_lengths <= 100).sum()
+        medium_answers = ((answer_lengths > 100) & (answer_lengths <= 500)).sum()
+        long_answers = (answer_lengths > 500).sum()
 
-        for _, row in df.iterrows():
-            answer_text = str(row.get('answer', ''))
-            if any(pattern in answer_text for pattern in reference_patterns):
-                answers_with_references += 1
+        legal_issues.append(f"短い回答（≤100文字）: {short_answers:,}件")
+        legal_issues.append(f"中程度の回答（101-500文字）: {medium_answers:,}件")
+        legal_issues.append(f"長い回答（>500文字）: {long_answers:,}件")
 
-        reference_ratio = (answers_with_references / len(df)) * 100
-        legal_issues.append(f"法的根拠を含む回答: {answers_with_references:,}件 ({reference_ratio:.1f}%)")
+    # 判例番号や条文参照の確認（詳細版）
+    if answer_col is not None:
+        reference_patterns = {
+            '条文参照': r'第\d+条',
+            '民法条文': r'民法第?\d+条',
+            '刑法条文': r'刑法第?\d+条',
+            '憲法条文': r'憲法第?\d+条',
+            '判例'    : r'判例|最判|東京地判|大阪高判',
+            '年月日'  : r'\d{4}年\d{1,2}月\d{1,2}日',
+            '事件番号': r'(平成|令和)\d+年'
+        }
+
+        reference_analysis = {}
+        for pattern_name, pattern in reference_patterns.items():
+            try:
+                count = df[answer_col].str.contains(pattern, regex=True, na=False).sum()
+                if count > 0:
+                    percentage = (count / len(df)) * 100
+                    reference_analysis[pattern_name] = f"{count:,}件 ({percentage:.1f}%)"
+            except Exception:
+                reference_analysis[pattern_name] = "検索エラー"
+
+        if reference_analysis:
+            legal_issues.append("**法的根拠の参照分析:**")
+            for ref_type, count_info in reference_analysis.items():
+                legal_issues.append(f"  - {ref_type}: {count_info}")
 
     return legal_issues
-
-
-def show_usage_instructions(dataset_type: str = "legal_qa") -> None:
-    """使用方法の説明を表示"""
-    st.markdown("---")
-    st.subheader("📖 使用方法")
-    st.markdown(f"""
-    ### 📋 前処理手順
-    1. **モデル選択**: サイドバーでRAG用途に適したモデルを選択
-    2. **CSVファイルアップロード**: question, answer 列を含むCSVファイルを選択
-    3. **前処理実行**: 以下の処理が自動で実行されます：
-       - 改行・空白の正規化
-       - 重複行の除去
-       - 空行の除去
-       - 引用符の正規化
-    4. **列結合**: Vector Store/RAG用に最適化された自然な文章として結合
-    5. **トークン使用量確認**: 選択モデルでのトークン数とコストを推定
-    6. **ダウンロード**: 前処理済みデータを各種形式でダウンロード
-
-    ### 🎯 RAG最適化の特徴
-    - **自然な文章結合**: ラベルなしで読みやすい文章として結合
-    - **OpenAI embedding対応**: text-embedding-ada-002等に最適化
-    - **検索性能向上**: 意味的検索の精度向上
-
-    ### 💡 推奨モデル
-    - **コスト重視**: gpt-4o-mini, gpt-4.1-mini
-    - **品質重視**: gpt-4o, gpt-4.1
-    - **推論タスク**: o1-mini, o3-mini（RAG用途には過剰）
-
-    ### ⚖️ 法律・判例QAデータの特徴
-    - **法律専門用語**: 条文、判例、法的概念の適切な処理
-    - **詳細な回答**: 法的根拠を含む包括的な説明
-    - **正確性重視**: 法的情報の正確性を保持した前処理
-    - **引用・参照**: 条文番号や判例番号などの法的根拠の保護
-    """)
 
 
 # ==================================================
@@ -664,32 +121,21 @@ def main():
     # データセットタイプの設定
     DATASET_TYPE = "legal_qa"
 
-    # ページ設定
-    try:
-        st.set_page_config(
-            page_title="法律・判例QAデータ前処理（完全独立版）",
-            page_icon="⚖️",
-            layout="wide",
-            initial_sidebar_state="expanded"
-        )
-    except st.errors.StreamlitAPIException:
-        pass
+    # ページ設定（共通関数利用）
+    setup_page_config(DATASET_TYPE)
 
-    # ヘッダー
-    st.title("⚖️ 法律・判例QAデータ前処理アプリ")
-    st.caption("RAG（Retrieval-Augmented Generation）用データ前処理 - 完全独立版")
-    st.markdown("---")
+    # ヘッダー（共通関数利用）
+    setup_page_header(DATASET_TYPE)
 
     # =================================================
-    # サイドバー: モデル選択機能
+    # サイドバー: モデル選択機能（共通関数利用）
     # =================================================
-    st.sidebar.title("⚖️ 法律・判例QAデータ")
-    st.sidebar.markdown("---")
+    setup_sidebar_header(DATASET_TYPE)
 
-    # モデル選択
+    # モデル選択（共通関数利用）
     selected_model = select_model(key="legal_model_selection")
 
-    # 選択されたモデル情報を表示
+    # 選択されたモデル情報を表示（共通関数利用）
     show_model_info(selected_model)
 
     st.sidebar.markdown("---")
@@ -754,7 +200,7 @@ def main():
             # セッション状態でファイル処理状況を管理
             file_key = f"file_{uploaded_file.name}_{uploaded_file.size}"
 
-            # ファイルが変更された場合は再読み込み
+            # ファイルが変更された場合は再読み込み（共通関数利用）
             if st.session_state.get('current_file_key') != file_key:
                 with st.spinner("📖 ファイルを読み込み中..."):
                     df, validation_results = load_dataset(uploaded_file, DATASET_TYPE)
@@ -795,7 +241,7 @@ def main():
             if show_validation:
                 st.subheader("🔍 データ検証")
 
-                # 基本検証結果
+                # 基本検証結果（共通関数の結果）
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write("**基本統計:**")
@@ -808,7 +254,12 @@ def main():
                     if legal_issues:
                         st.write("**法律・判例QAデータ特有の分析:**")
                         for issue in legal_issues:
-                            st.info(issue)
+                            if issue.startswith("**"):
+                                st.write(issue)
+                            elif issue.startswith("  - "):
+                                st.caption(issue)
+                            else:
+                                st.info(issue)
 
             # 前処理実行
             st.subheader("⚙️ 前処理実行")
@@ -823,7 +274,7 @@ def main():
             if process_button:
                 try:
                     with st.spinner("⚙️ 前処理中..."):
-                        # RAGデータの前処理
+                        # RAGデータの前処理（共通関数利用）
                         df_processed = process_rag_data(
                             df.copy(),
                             DATASET_TYPE,
@@ -840,10 +291,10 @@ def main():
                     st.subheader("✅ 前処理後のデータプレビュー")
                     st.dataframe(df_processed.head(10), use_container_width=True)
 
-                    # 統計情報の表示
+                    # 統計情報の表示（共通関数利用）
                     display_statistics(df, df_processed, DATASET_TYPE)
 
-                    # 選択されたモデルでのトークン使用量推定
+                    # 選択されたモデルでのトークン使用量推定（共通関数利用）
                     estimate_token_usage(df_processed, selected_model)
 
                     # 法律データ特有の後処理分析
@@ -870,30 +321,111 @@ def main():
 
                         with col2:
                             # 質問の複雑度分析
-                            if 'question' in df_processed.columns:
-                                question_lengths = df_processed['question'].str.len()
+                            question_col = None
+                            for col in df_processed.columns:
+                                if 'question' in col.lower():
+                                    question_col = col
+                                    break
+
+                            if question_col is not None:
+                                question_lengths = df_processed[question_col].str.len()
                                 st.write("**質問の複雑度統計:**")
                                 st.metric("平均質問長", f"{question_lengths.mean():.0f}文字")
                                 st.metric("最長質問", f"{question_lengths.max():,}文字")
                                 st.metric("最短質問", f"{question_lengths.min():,}文字")
 
-                        # 法的根拠の分析
-                        if 'answer' in df_processed.columns:
-                            st.write("**法的根拠の参照分析:**")
-                            reference_patterns = ['第.*条', '判例', '最判']
-                            reference_counts = {}
-                            for pattern in reference_patterns:
-                                try:
-                                    count = df_processed['answer'].str.contains(pattern, regex=True, na=False).sum()
-                                    reference_counts[pattern] = count
-                                except:
-                                    reference_counts[pattern] = 0
+                        # 法的根拠の詳細分析
+                        answer_col = None
+                        for col in df_processed.columns:
+                            if 'answer' in col.lower():
+                                answer_col = col
+                                break
 
-                            if any(count > 0 for count in reference_counts.values()):
-                                for pattern, count in reference_counts.items():
+                        if answer_col is not None:
+                            st.write("**法的根拠の参照分析:**")
+
+                            # より詳細な法的参照パターンの分析
+                            detailed_patterns = {
+                                '条文参照'  : r'第\d+条',
+                                '民法'      : r'民法',
+                                '刑法'      : r'刑法',
+                                '憲法'      : r'憲法',
+                                '判例'      : r'判例',
+                                '最高裁判例': r'最判',
+                                '地裁判例'  : r'地判',
+                                '高裁判例'  : r'高判'
+                            }
+
+                            reference_stats = {}
+                            total_with_references = 0
+
+                            for pattern_name, pattern in detailed_patterns.items():
+                                try:
+                                    count = df_processed[answer_col].str.contains(pattern, regex=True, na=False).sum()
                                     if count > 0:
                                         percentage = (count / len(df_processed)) * 100
-                                        st.write(f"- {pattern}: {count:,}件 ({percentage:.1f}%)")
+                                        reference_stats[pattern_name] = (count, percentage)
+                                        if pattern_name == '条文参照':  # 基本的な法的根拠として条文参照をカウント
+                                            total_with_references = count
+                                except Exception:
+                                    reference_stats[pattern_name] = (0, 0)
+
+                            if reference_stats:
+                                col1, col2, col3 = st.columns(3)
+
+                                # 主要統計の表示
+                                with col1:
+                                    total_refs = sum(count for count, _ in reference_stats.values())
+                                    st.metric("法的参照総数", f"{total_refs:,}")
+
+                                with col2:
+                                    if total_with_references > 0:
+                                        ref_ratio = (total_with_references / len(df_processed)) * 100
+                                        st.metric("根拠含有率", f"{ref_ratio:.1f}%")
+                                    else:
+                                        st.metric("根拠含有率", "0%")
+
+                                with col3:
+                                    if reference_stats:
+                                        avg_refs_per_answer = total_refs / len(df_processed)
+                                        st.metric("平均参照数/回答", f"{avg_refs_per_answer:.1f}")
+                                    else:
+                                        st.metric("平均参照数/回答", "0")
+
+                                # 詳細な参照タイプ別統計
+                                st.write("**参照タイプ別統計:**")
+                                for ref_type, (count, percentage) in reference_stats.items():
+                                    if count > 0:
+                                        st.write(f"- {ref_type}: {count:,}件 ({percentage:.1f}%)")
+
+                        # 回答長の詳細分析
+                        if answer_col is not None:
+                            st.write("**回答長の詳細分析:**")
+                            answer_lengths = df_processed[answer_col].astype(str).str.len()
+
+                            # 回答長のカテゴリ分析
+                            very_short = (answer_lengths <= 50).sum()
+                            short = ((answer_lengths > 50) & (answer_lengths <= 100)).sum()
+                            medium = ((answer_lengths > 100) & (answer_lengths <= 300)).sum()
+                            long = ((answer_lengths > 300) & (answer_lengths <= 500)).sum()
+                            very_long = (answer_lengths > 500).sum()
+
+                            col1, col2, col3, col4, col5 = st.columns(5)
+                            with col1:
+                                st.metric("極短", f"{very_short}")
+                                st.caption("≤50文字")
+                            with col2:
+                                st.metric("短", f"{short}")
+                                st.caption("51-100文字")
+                            with col3:
+                                st.metric("中", f"{medium}")
+                                st.caption("101-300文字")
+                            with col4:
+                                st.metric("長", f"{long}")
+                                st.caption("301-500文字")
+                            with col5:
+                                st.metric("極長", f"{very_long}")
+                                st.caption(">500文字")
 
                     logger.info(f"法律・判例QAデータ処理完了: {len(df):,} → {len(df_processed):,}行")
 
@@ -910,7 +442,7 @@ def main():
                 # ダウンロード・保存セクション
                 st.subheader("💾 ダウンロード・保存")
 
-                # ダウンロード用データの作成（キャッシュ）
+                # ダウンロード用データの作成（キャッシュ）（共通関数利用）
                 if 'download_data' not in st.session_state or st.session_state.get('download_data_key') != file_key:
                     with st.spinner("📦 ダウンロード用データを準備中..."):
                         csv_data, text_data = create_download_data(
@@ -950,7 +482,7 @@ def main():
                     else:
                         st.info("結合テキストが利用できません")
 
-                # ローカル保存
+                # ローカル保存（共通関数利用）
                 st.write("**💾 ローカルファイル保存（OUTPUTフォルダ）**")
 
                 col1, col2 = st.columns([3, 1])
@@ -1028,7 +560,7 @@ def main():
                     "民法第415条について教えてください",
                     "刑事事件と民事事件の違いは何ですか？"
                 ],
-                "answer": [
+                "answer"  : [
                     "契約違反による損害賠償は民法第415条に基づき、債務不履行により生じた損害の賠償を求めることができます...",
                     "民法第415条は債務不履行による損害賠償について定めた条文で、債務者がその債務の本旨に従った履行をしないとき...",
                     "刑事事件は国家が犯罪者を処罰する手続きで、民事事件は私人間の権利義務関係を解決する手続きです..."
@@ -1037,7 +569,7 @@ def main():
             sample_df = pd.DataFrame(sample_data)
             st.dataframe(sample_df, use_container_width=True)
 
-    # 使用方法の説明
+    # 使用方法の説明（共通関数利用）
     show_usage_instructions(DATASET_TYPE)
 
     # セッション状態の表示（デバッグ用）

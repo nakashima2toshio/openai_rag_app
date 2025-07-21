@@ -1,11 +1,13 @@
 # a30_020_make_vector_store_id.py
-# python a30_020_make_vector_store_id.py
+# [Usage] python a30_020_make_vector_store_id.py
+# --------------------------------------------------
 # 4つのデータセットをOpenAI Vector Storeに登録する完全版
+# --------------------------------------------------
 # OUTPUT/customer_support_faq.txt
 # OUTPUT/medical_qa.txt
 # OUTPUT/sciq_qa.txt
 # OUTPUT/legal_qa.txt
-
+# --------------------------------------------------
 import os
 import re
 import time
