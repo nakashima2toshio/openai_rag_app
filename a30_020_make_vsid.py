@@ -1,6 +1,6 @@
-# a30_020_make_vector_store_streamlit.py
+# a30_020_make_vsid.py
 # Vector Store作成Streamlitアプリ（完全修正版）
-# streamlit run a30_020_make_vector_store_streamlit.py --server.port=8502
+# streamlit run a30_020_make_vsid.py --server.port=8502
 
 import streamlit as st
 import pandas as pd
@@ -73,38 +73,38 @@ class VectorStoreConfig:
                 description="カスタマーサポートFAQデータベース",
                 chunk_size=2000,  # サイズ拡大
                 overlap=100,
-                max_file_size_mb=50,
-                max_chunks_per_file=5000
+                max_file_size_mb=30,  # より保守的な制限
+                max_chunks_per_file=4000  # チャンク数削減
             ),
             "medical_qa"          : cls(
                 dataset_type="medical_qa",
                 filename="medical_qa.txt",
                 store_name="Medical Q&A Knowledge Base",
                 description="医療質問回答データベース",
-                chunk_size=8000,  # さらに大幅にサイズ拡大してチャンク数を削減
-                overlap=200,
-                max_file_size_mb=40,  # ファイルサイズ制限を厳しく
-                max_chunks_per_file=15000  # チャンク数制限をさらに厳しく
+                chunk_size=16000,  # 大幅増加：チャンク数を半減
+                overlap=300,
+                max_file_size_mb=20,  # さらに厳格なファイルサイズ制限
+                max_chunks_per_file=6000  # チャンク数を大幅削減
             ),
             "sciq_qa"             : cls(
                 dataset_type="sciq_qa",
                 filename="sciq_qa.txt",
                 store_name="Science & Technology Q&A Knowledge Base",
                 description="科学技術質問回答データベース",
-                chunk_size=1500,  # サイズ拡大
-                overlap=80,
-                max_file_size_mb=200,
-                max_chunks_per_file=15000
+                chunk_size=2000,  # サイズ拡大
+                overlap=100,
+                max_file_size_mb=25,  # より保守的な制限
+                max_chunks_per_file=8000  # チャンク数削減
             ),
             "legal_qa"            : cls(
                 dataset_type="legal_qa",
                 filename="legal_qa.txt",
                 store_name="Legal Q&A Knowledge Base",
                 description="法律質問回答データベース",
-                chunk_size=2500,  # サイズ拡大
-                overlap=120,
-                max_file_size_mb=100,
-                max_chunks_per_file=8000
+                chunk_size=3000,  # サイズ拡大
+                overlap=150,
+                max_file_size_mb=25,  # より保守的な制限
+                max_chunks_per_file=6000  # チャンク数削減
             )
         }
 
@@ -470,23 +470,39 @@ class VectorStoreManager:
 
             # 事前ファイルサイズチェック
             estimated_size_mb = stats_dict.get("estimated_size_mb", 0)
-            if estimated_size_mb > 45:  # 45MB制限
-                logger.error(f"❌ ファイルサイズが大きすぎます: {estimated_size_mb:.1f}MB > 45MB")
+            if estimated_size_mb > 25:  # 25MB制限に厳格化
+                logger.error(f"❌ ファイルサイズが大きすぎます: {estimated_size_mb:.1f}MB > 25MB")
                 return {
                     "success": False,
-                    "error"  : f"ファイルサイズが制限を超えています: {estimated_size_mb:.1f}MB (制限: 45MB). チャンクサイズを大きくするか、データを分割してください。"
+                    "error"  : f"ファイルサイズが制限を超えています: {estimated_size_mb:.1f}MB (制限: 25MB). チャンクサイズを大きくするか、データを分割してください。"
                 }
 
             # 医療QA特有の追加制限
             if dataset_type == "medical_qa":
-                if len(jsonl_data_list) > 12000:  # 医療QA専用制限
-                    logger.warning(f"医療QAデータのチャンク数制限適用: {len(jsonl_data_list):,} -> 12,000")
-                    jsonl_data_list = jsonl_data_list[:12000]
-                    stats_dict["warnings"].append("医療QAデータのチャンク数を12,000に制限しました")
+                if len(jsonl_data_list) > 5000:  # さらに厳格な制限
+                    logger.warning(f"医療QAデータのチャンク数制限適用: {len(jsonl_data_list):,} -> 5,000")
+                    jsonl_data_list = jsonl_data_list[:5000]
+                    stats_dict["warnings"].append("医療QAデータのチャンク数を5,000に制限しました")
 
                 # サイズ再計算
                 total_size_recalc = sum(len(json.dumps(entry, ensure_ascii=False)) for entry in jsonl_data_list)
                 estimated_size_mb_recalc = total_size_recalc / (1024 * 1024)
+
+                # 15MB制限でさらにチェック
+                if estimated_size_mb_recalc > 15:
+                    # さらに削減が必要
+                    target_chunks = int(len(jsonl_data_list) * 15 / estimated_size_mb_recalc)
+                    target_chunks = max(1000, target_chunks)  # 最低1000チャンクは保証
+                    logger.warning(
+                        f"医療QAデータのサイズ制限適用: {len(jsonl_data_list):,} -> {target_chunks:,}チャンク")
+                    jsonl_data_list = jsonl_data_list[:target_chunks]
+                    stats_dict["warnings"].append(
+                        f"医療QAデータを15MB以下にするため{target_chunks:,}チャンクに制限しました")
+
+                    # 最終サイズ再計算
+                    total_size_recalc = sum(len(json.dumps(entry, ensure_ascii=False)) for entry in jsonl_data_list)
+                    estimated_size_mb_recalc = total_size_recalc / (1024 * 1024)
+
                 stats_dict["estimated_size_mb"] = estimated_size_mb_recalc
                 stats_dict["total_chunks"] = len(jsonl_data_list)
 
