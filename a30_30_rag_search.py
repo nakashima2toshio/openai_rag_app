@@ -184,8 +184,8 @@ class ModernRAGManager:
             store_id = VECTOR_STORES[store_name]
 
             # file_search ツールの設定（正しい型で定義）
-            file_search_tool_dict = {
-                "type": "file_search",
+            file_search_tool_dict: Dict[str, Any] = {
+                "type"            : "file_search",
                 "vector_store_ids": [store_id]
             }
 
