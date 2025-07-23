@@ -6,7 +6,6 @@
       <excludeFolder url="file://$MODULE_DIR$/datasets" />
       <excludeFolder url="file://$MODULE_DIR$/OUTPUT" />
       <excludeFolder url="file://$MODULE_DIR$/a3_rag" />
-      <excludeFolder url="file://$MODULE_DIR$/doc" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.12 (openai_rag_app)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

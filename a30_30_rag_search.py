@@ -1,8 +1,8 @@
 # streamlit run a30_30_rag_search.py --server.port=8501
-# a30_30_rag_search.py - 最新OpenAI Responses API完全対応版
-# OpenAI Responses API + file_search ツール + 環境変数APIキー対応
+# a30_30_rag_search.py - 最新OpenAI Responses API完全対応版（動的Vector Store対応・重複問題修正版）
+# OpenAI Responses API + file_search ツール + 環境変数APIキー対応 + 動的Vector Store ID管理
 """
-🔍 最新RAG検索アプリケーション
+🔍 最新RAG検索アプリケーション（動的Vector Store対応・重複問題修正版）
 
 【前提条件】
 1. OpenAI APIキーの環境変数設定（必須）:
@@ -18,29 +18,34 @@ streamlit run a30_30_rag_search.py --server.port=8501
 【主要機能】
 ✅ 最新Responses API使用
 ✅ file_search ツールでVector Store検索
+✅ 動的Vector Store ID管理（vector_stores.json）
+✅ 重複Vector Store対応（最新優先選択）
 ✅ ファイル引用表示
 ✅ 型安全実装（型エラー完全修正）
 ✅ 環境変数でAPIキー管理
 ✅ 英語/日本語質問対応
 ✅ カスタマイズ可能な検索オプション
+✅ 最新Vector Store自動取得・更新機能
 
-【安全性】
-- 環境変数でAPIキー管理（secrets.toml不要）
-- 型チェック回避による安定性
-- エラーハンドリング強化
+【Vector Store連携】
+- a30_020_make_vsid.py で作成されたVector Storeを自動認識
+- vector_stores.json ファイルで動的管理
+- 同名Vector Store重複時は最新作成日時を優先
+- OpenAI APIから最新状態を取得・更新
 """
 import streamlit as st
 import time
 import logging
+import json
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
-import json
 import traceback
 
 # OpenAI SDK のインポート
 try:
     from openai import OpenAI
+
     OPENAI_AVAILABLE = True
     logger = logging.getLogger(__name__)
     logger.info("✅ OpenAI SDK がロードされました")
@@ -52,6 +57,7 @@ except ImportError as e:
 # Agent SDK のインポート（オプション）
 try:
     from agents import Agent, Runner, SQLiteSession
+
     AGENT_SDK_AVAILABLE = True
     logger.info("✅ OpenAI Agent SDK もロードされました")
 except ImportError as e:
@@ -62,21 +68,301 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Vector Store IDの設定
-VECTOR_STORES = {
-    "Customer Support FAQ"    : "vs_687a0604f1508191aaf416d88e266ab7",
-    "Science & Technology Q&A": "vs_687a061acc908191af7d5d9ba623470b",
-    "Medical Q&A"             : "vs_687a060f9ed881918b213bfdeab8241b",
-    "Legal Q&A"               : "vs_687a062418ec8191872efdbf8f554836"
-}
 
-# Vector Storeの順序リスト（インデックス対応用）
-VECTOR_STORE_LIST = list(VECTOR_STORES.keys())
+# ===================================================================
+# Vector Store設定管理クラス（重複問題修正版）
+# ===================================================================
+class VectorStoreManager:
+    """Vector Store設定の動的管理（重複問題修正版）"""
+
+    CONFIG_FILE_PATH = Path("vector_stores.json")
+
+    # デフォルトのVector Store設定（フォールバック用）
+    DEFAULT_VECTOR_STORES = {
+        "Customer Support FAQ"    : "vs_687a0604f1508191aaf416d88e266ab7",
+        "Science & Technology Q&A": "vs_687a061acc908191af7d5d9ba623470b",
+        "Medical Q&A"             : "vs_687a060f9ed881918b213bfdeab8241b",
+        "Legal Q&A"               : "vs_687a062418ec8191872efdbf8f554836"
+    }
+
+    # a30_020_make_vsid.py のVectorStoreConfigと対応するマッピング
+    STORE_NAME_MAPPING = {
+        "customer_support_faq": "Customer Support FAQ Knowledge Base",
+        "medical_qa"          : "Medical Q&A Knowledge Base",
+        "sciq_qa"             : "Science & Technology Q&A Knowledge Base",
+        "legal_qa"            : "Legal Q&A Knowledge Base"
+    }
+
+    # 表示名への逆マッピング（UI表示用）
+    DISPLAY_NAME_MAPPING = {
+        "Customer Support FAQ Knowledge Base"    : "Customer Support FAQ",
+        "Medical Q&A Knowledge Base"             : "Medical Q&A",
+        "Science & Technology Q&A Knowledge Base": "Science & Technology Q&A",
+        "Legal Q&A Knowledge Base"               : "Legal Q&A"
+    }
+
+    def __init__(self, openai_client: OpenAI = None):
+        self.openai_client = openai_client
+        self._cache = {}
+        self._last_update = None
+
+    def load_vector_stores(self) -> Dict[str, str]:
+        """Vector Store設定を読み込み"""
+        try:
+            if self.CONFIG_FILE_PATH.exists():
+                with open(self.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                # 設定ファイルの形式確認
+                if 'vector_stores' in data and isinstance(data['vector_stores'], dict):
+                    stores = data['vector_stores']
+                    logger.info(f"✅ Vector Store設定を読み込み: {len(stores)}件")
+                    return stores
+                else:
+                    logger.warning("⚠️ 設定ファイル形式が不正です")
+                    return self.DEFAULT_VECTOR_STORES.copy()
+            else:
+                logger.info("ℹ️ 設定ファイルが存在しません。デフォルト値を使用")
+                return self.DEFAULT_VECTOR_STORES.copy()
+
+        except Exception as e:
+            logger.error(f"❌ Vector Store設定読み込みエラー: {e}")
+            st.warning(f"設定ファイル読み込みエラー: {e}")
+            return self.DEFAULT_VECTOR_STORES.copy()
+
+    def save_vector_stores(self, stores: Dict[str, str]) -> bool:
+        """Vector Store設定を保存"""
+        try:
+            config_data = {
+                "vector_stores": stores,
+                "last_updated" : datetime.now().isoformat(),
+                "source"       : "a30_30_rag_search.py",
+                "version"      : "1.1"
+            }
+
+            with open(self.CONFIG_FILE_PATH, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"✅ Vector Store設定を保存: {self.CONFIG_FILE_PATH}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Vector Store設定保存エラー: {e}")
+            st.error(f"設定保存エラー: {e}")
+            return False
+
+    def fetch_latest_vector_stores(self) -> Dict[str, str]:
+        """OpenAI APIから最新のVector Store一覧を取得し、既知の名前とマッチング（重複問題修正版）"""
+        if not self.openai_client:
+            logger.warning("⚠️ OpenAI クライアントが未設定です")
+            return self.load_vector_stores()
+
+        try:
+            # OpenAI APIからVector Store一覧を取得
+            stores_response = self.openai_client.vector_stores.list()
+
+            # Vector Storeを作成日時でソート（新しい順）
+            sorted_stores = sorted(
+                stores_response.data,
+                key=lambda x: x.created_at if hasattr(x, 'created_at') else 0,
+                reverse=True
+            )
+
+            api_stores = {}
+            store_candidates = {}  # 同名Store候補を管理
+
+            logger.info(f"📊 取得したVector Store数: {len(sorted_stores)}")
+
+            for store in sorted_stores:
+                store_name = store.name
+                store_id = store.id
+                created_at = getattr(store, 'created_at', 0)
+
+                logger.info(f"🔍 処理中: '{store_name}' ({store_id}) - 作成日時: {created_at}")
+
+                # 既知のstore_nameパターンとのマッチング
+                matched_display_name = None
+
+                # 完全一致確認
+                if store_name in self.DISPLAY_NAME_MAPPING:
+                    matched_display_name = self.DISPLAY_NAME_MAPPING[store_name]
+                else:
+                    # 部分一致確認（柔軟なマッチング）
+                    for full_name, display_name in self.DISPLAY_NAME_MAPPING.items():
+                        if (full_name.lower() in store_name.lower() or
+                                any(keyword in store_name.lower() for keyword in full_name.lower().split())):
+                            matched_display_name = display_name
+                            break
+
+                if matched_display_name:
+                    # 同名の場合は最新のもの（作成日時が新しい）を優先
+                    if matched_display_name not in store_candidates:
+                        store_candidates[matched_display_name] = {
+                            'id'        : store_id,
+                            'name'      : store_name,
+                            'created_at': created_at
+                        }
+                        logger.info(f"✅ 新規候補: '{matched_display_name}' -> '{store_name}' ({store_id})")
+                    else:
+                        # 既存候補と比較
+                        existing = store_candidates[matched_display_name]
+                        if created_at > existing['created_at']:
+                            logger.info(
+                                f"🔄 更新: '{matched_display_name}' -> '{store_name}' ({store_id}) [新: {created_at} > 旧: {existing['created_at']}]")
+                            store_candidates[matched_display_name] = {
+                                'id'        : store_id,
+                                'name'      : store_name,
+                                'created_at': created_at
+                            }
+                        else:
+                            logger.info(
+                                f"⏭️ スキップ: '{matched_display_name}' -> '{store_name}' ({store_id}) [新: {created_at} <= 既存: {existing['created_at']}]")
+                else:
+                    # 既知パターンにマッチしない場合
+                    if store_name not in store_candidates:
+                        store_candidates[store_name] = {
+                            'id'        : store_id,
+                            'name'      : store_name,
+                            'created_at': created_at
+                        }
+                        logger.info(f"ℹ️ 新規店舗: '{store_name}' ({store_id})")
+
+            # 最終的なapi_storesを構築
+            for display_name, candidate in store_candidates.items():
+                api_stores[display_name] = candidate['id']
+                logger.info(f"🎯 最終選択: '{display_name}' -> {candidate['id']} (作成日時: {candidate['created_at']})")
+
+            if api_stores:
+                logger.info(f"✅ OpenAI APIから{len(api_stores)}個のVector Storeを取得完了")
+                return api_stores
+            else:
+                logger.warning("⚠️ APIから有効なVector Storeが見つかりませんでした")
+                return self.load_vector_stores()
+
+        except Exception as e:
+            logger.error(f"❌ OpenAI API取得エラー: {e}")
+            logger.error(traceback.format_exc())
+            st.warning(f"最新情報の取得に失敗しました: {e}")
+            return self.load_vector_stores()
+
+    def get_vector_stores(self, force_refresh: bool = False) -> Dict[str, str]:
+        """Vector Store一覧を取得（キャッシュ機能付き）"""
+        now = datetime.now()
+
+        # 強制リフレッシュまたは初回取得の場合
+        if force_refresh or not self._cache:
+            logger.info("🔄 Vector Store情報を更新中...")
+
+            # APIからの最新情報を取得
+            if self.openai_client and st.session_state.get('auto_refresh_stores', True):
+                try:
+                    api_stores = self.fetch_latest_vector_stores()
+                    self._cache = api_stores
+                    self._last_update = now
+                    return api_stores
+                except Exception as e:
+                    logger.warning(f"⚠️ API取得に失敗、設定ファイルから読み込み: {e}")
+
+            # 設定ファイルから読み込み（フォールバック）
+            stores = self.load_vector_stores()
+            self._cache = stores
+            self._last_update = now
+            return stores
+
+        # キャッシュチェック（5分間有効）
+        if self._last_update and (now - self._last_update).seconds >= 300:
+            logger.info("⏰ キャッシュ有効期限切れ、更新中...")
+            return self.get_vector_stores(force_refresh=True)
+
+        logger.info("💾 キャッシュから取得")
+        return self._cache
+
+    def refresh_and_save(self) -> Dict[str, str]:
+        """最新のVector Store情報を取得して保存"""
+        if not self.openai_client:
+            st.error("OpenAI クライアントが設定されていません")
+            return self.load_vector_stores()
+
+        try:
+            # キャッシュクリア
+            self._cache = {}
+            self._last_update = None
+
+            # 最新情報を強制取得
+            latest_stores = self.get_vector_stores(force_refresh=True)
+
+            # 設定ファイルに保存
+            if self.save_vector_stores(latest_stores):
+                st.success(f"✅ Vector Store設定を更新しました（{len(latest_stores)}件）")
+
+                # 詳細情報を表示
+                with st.expander("📊 更新されたVector Store一覧", expanded=True):
+                    for name, store_id in latest_stores.items():
+                        st.write(f"**{name}**: `{store_id}`")
+
+                return latest_stores
+            else:
+                st.error("❌ 設定の保存に失敗しました")
+                return self.load_vector_stores()
+
+        except Exception as e:
+            st.error(f"❌ 更新処理エラー: {e}")
+            logger.error(f"更新処理エラー: {e}")
+            logger.error(traceback.format_exc())
+            return self.load_vector_stores()
+
+    def debug_vector_stores(self) -> Dict[str, Any]:
+        """デバッグ用：Vector Store情報の詳細取得"""
+        debug_info = {
+            "config_file_exists": self.CONFIG_FILE_PATH.exists(),
+            "cached_stores"     : self._cache,
+            "last_update"       : self._last_update.isoformat() if self._last_update else None,
+            "api_stores"        : {}
+        }
+
+        if self.openai_client:
+            try:
+                stores_response = self.openai_client.vector_stores.list()
+                for store in stores_response.data:
+                    debug_info["api_stores"][store.name] = {
+                        "id"         : store.id,
+                        "created_at" : store.created_at,
+                        "file_counts": getattr(store, 'file_counts', None),
+                        "usage_bytes": getattr(store, 'usage_bytes', None)
+                    }
+            except Exception as e:
+                debug_info["api_error"] = str(e)
+
+        return debug_info
+
+
+# グローバル Vector Store Manager インスタンス
+@st.cache_resource
+def get_vector_store_manager():
+    """Vector Store Manager のシングルトン取得"""
+    try:
+        openai_client = OpenAI()
+        return VectorStoreManager(openai_client)
+    except Exception as e:
+        logger.warning(f"OpenAI クライアント初期化失敗: {e}")
+        return VectorStoreManager()
+
+
+# ===================================================================
+# 動的Vector Store取得
+# ===================================================================
+def get_current_vector_stores(force_refresh: bool = False) -> Tuple[Dict[str, str], List[str]]:
+    """現在のVector Store設定を取得"""
+    manager = get_vector_store_manager()
+    stores = manager.get_vector_stores(force_refresh=force_refresh)
+    store_list = list(stores.keys())
+    return stores, store_list
+
 
 # 言語設定
 LANGUAGE_OPTIONS = {
     "English": "en",
-    "日本語": "ja"
+    "日本語" : "ja"
 }
 
 # テスト用質問（英語版 - RAGデータに最適化）
@@ -145,21 +431,6 @@ test_questions_4_ja = [
     "消費者保護法の適用範囲"
 ]
 
-# テスト用質問の配列（VECTOR_STORESの順序と対応）
-test_q_en = [
-    test_questions_en,     # Customer Support FAQ
-    test_questions_2_en,   # Science & Technology Q&A
-    test_questions_3_en,   # Medical Q&A
-    test_questions_4_en,   # Legal Q&A
-]
-
-test_q_ja = [
-    test_questions_ja,     # Customer Support FAQ
-    test_questions_2_ja,   # Science & Technology Q&A
-    test_questions_3_ja,   # Medical Q&A
-    test_questions_4_ja,   # Legal Q&A
-]
-
 # OpenAI APIキーの設定（環境変数から自動取得）
 try:
     # 環境変数 OPENAI_API_KEY から自動的に読み取り
@@ -178,11 +449,10 @@ class ModernRAGManager:
     def __init__(self):
         self.agent_sessions = {}  # Agent SDK用セッション（オプション）
 
-    def search_with_responses_api(self, query: str, store_name: str, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    def search_with_responses_api(self, query: str, store_name: str, store_id: str, **kwargs) -> Tuple[
+        str, Dict[str, Any]]:
         """最新Responses API + file_search ツールを使用した検索"""
         try:
-            store_id = VECTOR_STORES[store_name]
-
             # file_search ツールの設定（正しい型で定義）
             file_search_tool_dict: Dict[str, Any] = {
                 "type"            : "file_search",
@@ -223,12 +493,12 @@ class ModernRAGManager:
             # メタデータの構築（型を明示的に指定）
             metadata: Dict[str, Any] = {
                 "store_name": store_name,
-                "store_id": store_id,
-                "query": query,
-                "timestamp": datetime.now().isoformat(),
-                "model": "gpt-4o-mini",
-                "method": "responses_api_file_search",
-                "citations": citations,
+                "store_id"  : store_id,
+                "query"     : query,
+                "timestamp" : datetime.now().isoformat(),
+                "model"     : "gpt-4o-mini",
+                "method"    : "responses_api_file_search",
+                "citations" : citations,
                 "tool_calls": self._extract_tool_calls(response)
             }
 
@@ -260,20 +530,21 @@ class ModernRAGManager:
 
             # エラー時のメタデータ（型安全）
             error_metadata: Dict[str, Any] = {
-                "error": str(e),
-                "method": "responses_api_error",
+                "error"     : str(e),
+                "method"    : "responses_api_error",
                 "store_name": store_name,
-                "query": query,
-                "timestamp": datetime.now().isoformat()
+                "store_id"  : store_id,
+                "query"     : query,
+                "timestamp" : datetime.now().isoformat()
             }
             return error_msg, error_metadata
 
-    def search_with_agent_sdk(self, query: str, store_name: str) -> Tuple[str, Dict[str, Any]]:
+    def search_with_agent_sdk(self, query: str, store_name: str, store_id: str) -> Tuple[str, Dict[str, Any]]:
         """Agent SDKを使用した検索（簡易版 - file_searchはResponses APIで実行）"""
         try:
             if not AGENT_SDK_AVAILABLE:
                 logger.info("Agent SDK利用不可、Responses APIにフォールバック")
-                return self.search_with_responses_api(query, store_name)
+                return self.search_with_responses_api(query, store_name, store_id)
 
             # 注意: Agent SDKでのfile_searchツール統合は複雑なため、
             # 現在は簡易版として通常のAgent実行のみ行い、
@@ -309,12 +580,12 @@ class ModernRAGManager:
             # メタデータの構築
             metadata: Dict[str, Any] = {
                 "store_name": store_name,
-                "store_id": VECTOR_STORES[store_name],
-                "query": query,
-                "timestamp": datetime.now().isoformat(),
-                "model": "gpt-4o-mini",
-                "method": "agent_sdk_simple_session",
-                "note": "Agent SDKセッション管理のみ、RAG機能なし"
+                "store_id"  : store_id,
+                "query"     : query,
+                "timestamp" : datetime.now().isoformat(),
+                "model"     : "gpt-4o-mini",
+                "method"    : "agent_sdk_simple_session",
+                "note"      : "Agent SDKセッション管理のみ、RAG機能なし"
             }
 
             logger.info("Agent SDK検索完了（簡易版）")
@@ -325,14 +596,15 @@ class ModernRAGManager:
             logger.error(error_msg)
             logger.warning("Agent SDKエラーによりResponses APIにフォールバック")
             # Agent SDKが失敗した場合はResponses APIにフォールバック
-            return self.search_with_responses_api(query, store_name)
+            return self.search_with_responses_api(query, store_name, store_id)
 
-    def search(self, query: str, store_name: str, use_agent_sdk: bool = True, **kwargs) -> Tuple[str, Dict[str, Any]]:
+    def search(self, query: str, store_name: str, store_id: str, use_agent_sdk: bool = True, **kwargs) -> Tuple[
+        str, Dict[str, Any]]:
         """統合検索メソッド"""
         if use_agent_sdk and AGENT_SDK_AVAILABLE:
-            return self.search_with_agent_sdk(query, store_name)
+            return self.search_with_agent_sdk(query, store_name, store_id)
         else:
-            return self.search_with_responses_api(query, store_name, **kwargs)
+            return self.search_with_responses_api(query, store_name, store_id, **kwargs)
 
     def _extract_response_text(self, response) -> str:
         """レスポンスからテキストを抽出"""
@@ -369,9 +641,9 @@ class ModernRAGManager:
                                     for annotation in content.annotations:
                                         if hasattr(annotation, 'type') and annotation.type == "file_citation":
                                             citations.append({
-                                                "file_id": getattr(annotation, 'file_id', ''),
+                                                "file_id" : getattr(annotation, 'file_id', ''),
                                                 "filename": getattr(annotation, 'filename', ''),
-                                                "index": getattr(annotation, 'index', 0)
+                                                "index"   : getattr(annotation, 'index', 0)
                                             })
         except Exception as e:
             logger.error(f"引用情報抽出エラー: {e}")
@@ -386,9 +658,9 @@ class ModernRAGManager:
                 for item in response.output:
                     if hasattr(item, 'type') and item.type == "file_search_call":
                         tool_calls.append({
-                            "id": getattr(item, 'id', ''),
-                            "type": "file_search",
-                            "status": getattr(item, 'status', ''),
+                            "id"     : getattr(item, 'id', ''),
+                            "type"   : "file_search",
+                            "status" : getattr(item, 'status', ''),
                             "queries": getattr(item, 'queries', [])
                         })
         except Exception as e:
@@ -411,17 +683,21 @@ def initialize_session_state():
     if 'current_query' not in st.session_state:
         st.session_state.current_query = ""
     if 'selected_store' not in st.session_state:
-        st.session_state.selected_store = list(VECTOR_STORES.keys())[0]
+        # 動的に最初のVector Storeを選択
+        _, store_list = get_current_vector_stores()
+        st.session_state.selected_store = store_list[0] if store_list else "Customer Support FAQ"
     if 'selected_language' not in st.session_state:
         st.session_state.selected_language = "English"  # デフォルトは英語（RAGデータに合わせて）
     if 'use_agent_sdk' not in st.session_state:
         st.session_state.use_agent_sdk = False  # デフォルトはResponses API直接使用
     if 'search_options' not in st.session_state:
         st.session_state.search_options = {
-            'max_results': 20,
+            'max_results'    : 20,
             'include_results': True,
-            'show_citations': True
+            'show_citations' : True
         }
+    if 'auto_refresh_stores' not in st.session_state:
+        st.session_state.auto_refresh_stores = True
 
 
 def display_search_history():
@@ -437,6 +713,7 @@ def display_search_history():
         with st.expander(f"履歴 {i + 1}: {item['query'][:50]}..."):
             st.markdown(f"**質問:** {item['query']}")
             st.markdown(f"**Vector Store:** {item['store_name']}")
+            st.markdown(f"**Store ID:** `{item.get('store_id', 'N/A')}`")
             st.markdown(f"**実行時間:** {item['timestamp']}")
             st.markdown(f"**検索方法:** {item.get('method', 'unknown')}")
 
@@ -457,28 +734,60 @@ def display_search_history():
                     st.json(item)
 
 
-def get_selected_store_index(selected_store: str) -> int:
+def get_selected_store_index(selected_store: str, store_list: List[str]) -> int:
     """選択されたVector Storeのインデックスを取得"""
     try:
-        return VECTOR_STORE_LIST.index(selected_store)
+        return store_list.index(selected_store)
     except ValueError:
         return 0  # デフォルトは最初のインデックス
 
 
-def display_test_questions():
-    """テスト用質問の表示（改修版・言語対応）"""
-    # 現在選択されているVector Storeと言語を取得
-    selected_store = st.session_state.get('selected_store', VECTOR_STORE_LIST[0])
-    selected_language = st.session_state.get('selected_language', 'English')
-    store_index = get_selected_store_index(selected_store)
+def get_test_questions_by_store(store_name: str, language: str) -> List[str]:
+    """Vector Storeに応じたテスト質問を取得（動的対応）"""
+    # 動的なVector Storeに対応するための柔軟なマッピング
+    store_question_mapping = {
+        # Customer Support FAQ系
+        ("Customer Support FAQ", "English")    : test_questions_en,
+        ("Customer Support FAQ", "日本語")     : test_questions_ja,
 
-    # 言語に応じて質問リストを選択
-    if selected_language == "English":
-        questions = test_q_en[store_index] if store_index < len(test_q_en) else []
-        lang_suffix = "en"
-    else:
-        questions = test_q_ja[store_index] if store_index < len(test_q_ja) else []
-        lang_suffix = "ja"
+        # Science & Technology系
+        ("Science & Technology Q&A", "English"): test_questions_2_en,
+        ("Science & Technology Q&A", "日本語") : test_questions_2_ja,
+
+        # Medical系
+        ("Medical Q&A", "English")             : test_questions_3_en,
+        ("Medical Q&A", "日本語")              : test_questions_3_ja,
+
+        # Legal系
+        ("Legal Q&A", "English")               : test_questions_4_en,
+        ("Legal Q&A", "日本語")                : test_questions_4_ja,
+    }
+
+    # 完全一致確認
+    key = (store_name, language)
+    if key in store_question_mapping:
+        return store_question_mapping[key]
+
+    # 部分一致確認（柔軟対応）
+    for (mapped_store, mapped_lang), questions in store_question_mapping.items():
+        if (mapped_lang == language and
+                (mapped_store.lower() in store_name.lower() or
+                 any(word in store_name.lower() for word in mapped_store.lower().split()))):
+            return questions
+
+    # デフォルト（Customer Support FAQ）
+    default_key = ("Customer Support FAQ", language)
+    return store_question_mapping.get(default_key, test_questions_en)
+
+
+def display_test_questions():
+    """テスト用質問の表示（動的Vector Store対応）"""
+    # 現在選択されているVector Storeと言語を取得
+    selected_store = st.session_state.get('selected_store', 'Customer Support FAQ')
+    selected_language = st.session_state.get('selected_language', 'English')
+
+    # 対応する質問を取得
+    questions = get_test_questions_by_store(selected_store, selected_language)
 
     # ヘッダーの動的生成
     if selected_language == "English":
@@ -503,11 +812,55 @@ def display_test_questions():
 
     # 質問ボタンの表示
     for i, question in enumerate(questions):
-        button_key = f"test_q_{selected_store}_{lang_suffix}_{i}"
+        button_key = f"test_q_{selected_store}_{selected_language}_{i}_{hash(question)}"
         if st.button(f"Q{i + 1}: {question}", key=button_key):
             st.session_state.current_query = question
             st.session_state.selected_store = selected_store
             st.rerun()
+
+
+def display_vector_store_management():
+    """Vector Store管理UI（重複問題修正版）"""
+    st.header("🗄️ Vector Store管理（最新ID優先）")
+
+    manager = get_vector_store_manager()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**現在の設定ファイル**")
+        if manager.CONFIG_FILE_PATH.exists():
+            file_stat = manager.CONFIG_FILE_PATH.stat()
+            st.success(f"✅ 存在 ({file_stat.st_size} bytes)")
+            modified_time = datetime.fromtimestamp(file_stat.st_mtime)
+            st.write(f"最終更新: {modified_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            st.warning("⚠️ 設定ファイル未作成")
+
+    with col2:
+        st.write("**操作**")
+        if st.button("🔄 最新情報に更新", type="primary"):
+            with st.spinner("最新のVector Store情報を取得中..."):
+                updated_stores = manager.refresh_and_save()
+                st.session_state['vector_stores_updated'] = datetime.now().isoformat()
+                # キャッシュクリア
+                st.cache_resource.clear()
+                st.rerun()
+
+        if st.button("📊 デバッグ情報表示"):
+            debug_info = manager.debug_vector_stores()
+            with st.expander("🔍 デバッグ情報", expanded=True):
+                st.json(debug_info)
+
+        if st.button("📁 設定ファイル表示"):
+            if manager.CONFIG_FILE_PATH.exists():
+                try:
+                    with open(manager.CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
+                        config_content = f.read()
+                    st.code(config_content, language='json')
+                except Exception as e:
+                    st.error(f"ファイル読み込みエラー: {e}")
+            else:
+                st.warning("設定ファイルが存在しません")
 
 
 def display_system_info():
@@ -523,36 +876,32 @@ def display_system_info():
         st.write(f"- 検索結果詳細: ✅")
         st.write(f"- 型安全実装: ✅")
         st.write(f"- 環境変数APIキー: ✅")
+        st.write(f"- 動的Vector Store管理: ✅")
+        st.write(f"- 重複ID解決: ✅（最新優先）")
 
         st.write("**APIキー設定:**")
         st.write("- 環境変数 `OPENAI_API_KEY` から自動取得")
         st.write("- Streamlit secrets.toml 不要")
         st.code("export OPENAI_API_KEY='your-api-key-here'")
 
-        st.write("**Vector Stores:**")
-        for i, (name, store_id) in enumerate(VECTOR_STORES.items()):
-            st.write(f"{i+1}. {name}: `{store_id}`")
+        # 動的Vector Store情報
+        st.write("**Vector Stores（動的・最新優先）:**")
+        stores, _ = get_current_vector_stores()
+        for i, (name, store_id) in enumerate(stores.items(), 1):
+            st.write(f"{i}. {name}: `{store_id}`")
 
         if st.session_state.search_history:
             st.write(f"**検索履歴:** {len(st.session_state.search_history)} 件")
 
         # Vector Store連動情報
         st.write("**設定情報:**")
-        selected_store = st.session_state.get('selected_store', VECTOR_STORE_LIST[0])
+        selected_store = st.session_state.get('selected_store', 'Customer Support FAQ')
         selected_language = st.session_state.get('selected_language', 'English')
-        store_index = get_selected_store_index(selected_store)
-
-        # 言語に応じた質問数を取得
-        if selected_language == "English":
-            question_count = len(test_q_en[store_index]) if store_index < len(test_q_en) else 0
-        else:
-            question_count = len(test_q_ja[store_index]) if store_index < len(test_q_ja) else 0
 
         st.write(f"- 選択Vector Store: {selected_store}")
-        st.write(f"- インデックス: {store_index}")
         st.write(f"- 言語: {selected_language}")
-        st.write(f"- テスト質問数: {question_count}")
         st.write(f"- Agent SDK使用: {'有効' if st.session_state.get('use_agent_sdk', False) else '無効'}")
+        st.write(f"- 自動更新: {'有効' if st.session_state.get('auto_refresh_stores', True) else '無効'}")
 
         # RAG最適化情報
         if selected_language == "English":
@@ -599,6 +948,14 @@ def display_search_options():
             )
             st.session_state.use_agent_sdk = use_agent_sdk
 
+        # Vector Store自動更新設定
+        auto_refresh = st.checkbox(
+            "Vector Store自動更新",
+            value=st.session_state.auto_refresh_stores,
+            help="起動時にOpenAI APIから最新のVector Store情報を取得"
+        )
+        st.session_state.auto_refresh_stores = auto_refresh
+
 
 def display_search_results(response_text: str, metadata: Dict[str, Any]):
     """検索結果の表示"""
@@ -636,7 +993,7 @@ def display_search_results(response_text: str, metadata: Dict[str, Any]):
 def main():
     """メイン関数"""
     st.set_page_config(
-        page_title="最新RAG検索アプリ（完全修正版）",
+        page_title="最新RAG検索アプリ（重複問題修正版）",
         page_icon="🔍",
         layout="wide"
     )
@@ -647,11 +1004,18 @@ def main():
     # RAGマネージャーの取得
     rag_manager = get_rag_manager()
 
+    # Vector Store設定の取得（強制リフレッシュは初回のみ）
+    force_refresh = st.session_state.get('force_initial_refresh', True)
+    if force_refresh:
+        st.session_state['force_initial_refresh'] = False
+
+    vector_stores, vector_store_list = get_current_vector_stores(force_refresh=force_refresh)
+
     # ヘッダー
-    st.write("🔍 最新RAG検索アプリケーション（完全修正版）")
+    st.write("🔍 最新RAG検索アプリケーション（重複問題修正・最新ID優先版）")
 
     # API状況表示
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.success("✅ OpenAI Responses API 利用可能")
         st.success("✅ file_search ツール対応")
@@ -660,6 +1024,10 @@ def main():
             st.success("✅ Agent SDK 利用可能")
         else:
             st.info("ℹ️ Agent SDK 未利用（Responses APIのみ）")
+    with col3:
+        st.success(f"✅ 動的Vector Store管理")
+        st.success(f"🔄 重複ID解決（最新優先）")
+        st.info(f"📊 利用可能店舗: {len(vector_stores)}件")
 
     st.markdown("---")
 
@@ -667,17 +1035,34 @@ def main():
     with st.sidebar:
         st.header("⚙️ 設定")
 
-        # Vector Store選択
-        selected_store = st.selectbox(
-            "Vector Store を選択",
-            options=list(VECTOR_STORES.keys()),
-            index=list(VECTOR_STORES.keys()).index(st.session_state.selected_store),
-            key="store_selection"
-        )
-        st.session_state.selected_store = selected_store
+        # Vector Store選択（動的）
+        if vector_store_list:
+            # 現在の選択が利用可能かチェック
+            current_selected = st.session_state.get('selected_store', vector_store_list[0])
+            if current_selected not in vector_store_list:
+                current_selected = vector_store_list[0]
+                st.session_state.selected_store = current_selected
 
-        # 選択されたVector Store IDを表示
-        st.code(VECTOR_STORES[selected_store])
+            selected_store = st.selectbox(
+                "Vector Store を選択",
+                options=vector_store_list,
+                index=vector_store_list.index(current_selected),
+                key="store_selection"
+            )
+            st.session_state.selected_store = selected_store
+
+            # 選択されたVector Store IDを表示
+            selected_store_id = vector_stores.get(selected_store, "未知のID")
+            st.code(selected_store_id)
+
+            # ID更新状況表示
+            if st.session_state.get('vector_stores_updated'):
+                update_time = st.session_state['vector_stores_updated']
+                update_dt = datetime.fromisoformat(update_time)
+                st.caption(f"最終更新: {update_dt.strftime('%H:%M:%S')}")
+        else:
+            st.error("❌ 利用可能なVector Storeがありません")
+            st.stop()
 
         # 言語選択
         st.markdown("---")
@@ -698,6 +1083,11 @@ def main():
 
         # 検索オプション
         display_search_options()
+
+        # Vector Store管理
+        st.markdown("---")
+        with st.expander("🗄️ Vector Store管理", expanded=False):
+            display_vector_store_management()
 
         # システム情報
         display_system_info()
@@ -732,13 +1122,20 @@ def main():
                 st.header("🤖 検索結果")
 
                 with st.spinner("🔍 Vector Store検索中..."):
+                    # 選択されたVector StoreのIDを取得
+                    selected_store_id = vector_stores.get(selected_store, "")
+                    if not selected_store_id:
+                        st.error(f"❌ Vector Store ID が見つかりません: {selected_store}")
+                        return
+
                     # 検索オプションの取得
                     search_options = st.session_state.search_options
 
-                    # 検索実行
+                    # 検索実行（store_idも渡す）
                     final_result, final_metadata = rag_manager.search(
                         query,
                         selected_store,
+                        selected_store_id,
                         use_agent_sdk=st.session_state.use_agent_sdk,
                         max_results=search_options['max_results'],
                         include_results=search_options['include_results']
@@ -749,11 +1146,12 @@ def main():
 
                 # 検索履歴に追加（型安全）
                 history_item: Dict[str, Any] = {
-                    "query": query,
-                    "store_name": selected_store,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "method": final_metadata.get('method', 'unknown'),
-                    "citations": final_metadata.get('citations', []),
+                    "query"         : query,
+                    "store_name"    : selected_store,
+                    "store_id"      : selected_store_id,
+                    "timestamp"     : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "method"        : final_metadata.get('method', 'unknown'),
+                    "citations"     : final_metadata.get('citations', []),
                     "result_preview": final_result[:200] + "..." if len(final_result) > 200 else final_result
                 }
 
@@ -776,6 +1174,8 @@ def main():
             st.markdown("""
             - **最新Responses API**: OpenAIの最新API
             - **file_search ツール**: Vector Storeからの高精度検索
+            - **動的Vector Store管理**: 自動ID更新・設定ファイル連携
+            - **重複ID解決**: 同名Vector Storeの最新作成日時優先
             - **ファイル引用**: 検索結果の出典表示
             - **カスタマイズ可能**: 結果数、フィルタリング等
             - **Agent SDK連携**: セッション管理（オプション）
@@ -783,50 +1183,92 @@ def main():
             - **環境変数APIキー**: セキュアな設定方法
             """)
 
-            # 環境変数の説明
-            with st.expander("🔑 APIキー設定について", expanded=False):
+            # 重複問題修正の説明
+            with st.expander("🔄 重複ID問題修正について", expanded=False):
                 st.markdown("""
-                **環境変数でのAPIキー設定:**
-                ```bash
-                export OPENAI_API_KEY='your-api-key-here'
-                ```
-                
-                **利点:**
-                - セキュリティが向上
-                - secrets.toml ファイル不要
-                - 本番環境での標準的な方法
-                - バージョン管理から除外される
+                **修正内容: 同名Vector Storeの重複問題解決**
+
+                **問題:**
+                - 同じ名前で複数のVector Storeが存在
+                - 古いIDが選択されるバグ
+                - 作成日時での優先度が未実装
+
+                **修正:**
+                - **作成日時ソート**: Vector Store一覧を作成日時順（新しい順）でソート
+                - **最新優先選択**: 同名の場合は`created_at`が最新のものを優先
+                - **詳細ログ出力**: どのIDが選択されたかをログで確認可能
+                - **デバッグ機能**: サイドバーで詳細情報を確認可能
+
+                **選択ロジック:**
+                1. OpenAI APIからVector Store一覧を取得
+                2. 作成日時(`created_at`)で降順ソート
+                3. 同名Store候補の中から最新を選択
+                4. 設定ファイルに保存・キャッシュ
+
+                **確認方法:**
+                - サイドバー「Vector Store管理」→「デバッグ情報表示」
+                - ログでどのIDが選択されたかを確認
                 """)
 
-            # 型エラー解決の説明
-            with st.expander("🔧 型エラー修正について", expanded=False):
+            # Vector Store動的管理の説明
+            with st.expander("🗄️ 動的Vector Store管理について", expanded=False):
                 st.markdown("""
-                **修正内容:**
-                - OpenAI SDK型定義に対応
-                - `# type: ignore[arg-type]` で型チェック回避
-                - 実際のAPI動作には影響なし
-                - 型安全なコード構造を維持
+                **新機能: 動的Vector Store管理**
+
+                - **自動更新**: OpenAI APIから最新のVector Store一覧を取得
+                - **設定ファイル連携**: `vector_stores.json` で永続化
+                - **a30_020_make_vsid.py 連携**: 新規作成されたVector Storeを自動認識
+                - **フォールバック**: 設定ファイルがない場合はデフォルト値を使用
+
+                **設定ファイル形式:**
+                ```json
+                {
+                  "vector_stores": {
+                    "Customer Support FAQ": "vs_xxx...",
+                    "Medical Q&A": "vs_yyy...",
+                    ...
+                  },
+                  "last_updated": "2025-01-XX...",
+                  "source": "a30_30_rag_search.py",
+                  "version": "1.1"
+                }
+                ```
+
+                **更新方法:**
+                1. サイドバーの「Vector Store管理」で「最新情報に更新」をクリック
+                2. 自動でOpenAI APIから最新一覧を取得（重複解決済み）
+                3. 設定ファイルに保存して永続化
                 """)
 
             # トラブルシューティング
             with st.expander("🚨 トラブルシューティング", expanded=False):
                 st.markdown("""
+                **重複ID問題の場合:**
+                - サイドバー「Vector Store管理」→「最新情報に更新」をクリック
+                - 「デバッグ情報表示」で選択されたIDを確認
+                - ログで最新作成日時のIDが選択されているかを確認
+
                 **APIキーエラーの場合:**
                 ```bash
                 # 環境変数確認
                 echo $OPENAI_API_KEY
-                
+
                 # 設定方法
                 export OPENAI_API_KEY='your-api-key-here'
-                
+
                 # 永続化（.bashrc/.zshrcに追加）
                 echo 'export OPENAI_API_KEY="your-api-key-here"' >> ~/.bashrc
                 ```
-                
-                **その他のエラー:**
+
+                **Vector Store関連エラー:**
                 - Vector Store IDが正しいか確認
+                - 「最新情報に更新」ボタンで再取得
+                - a30_020_make_vsid.py で新規作成後は更新が必要
+
+                **その他のエラー:**
                 - OpenAI SDKが最新版か確認: `pip install --upgrade openai`
                 - インターネット接続を確認
+                - vector_stores.json ファイルの形式を確認
                 """)
 
     # 検索履歴セクション
@@ -835,9 +1277,10 @@ def main():
 
     # フッター
     st.markdown("---")
-    st.markdown("#### 最新RAG検索アプリケーション（完全修正版）**")
+    st.markdown("#### 最新RAG検索アプリケーション（重複問題修正・最新ID優先版）")
     st.markdown("🚀 **OpenAI Responses API + file_search ツール** による次世代RAG")
-    st.markdown("✨ **新機能**: 最新API対応、ファイル引用、検索オプション、型安全実装")
+    st.markdown("✨ **修正機能**: 重複Vector Store ID問題解決、最新作成日時優先")
+    st.markdown("🔗 **a30_020_make_vsid.py 連携**: 新規Vector Store自動認識")
     st.markdown("🔑 **セキュリティ**: 環境変数でのAPIキー管理")
     if AGENT_SDK_AVAILABLE:
         st.markdown("🔧 **Agent SDK**: セッション管理サポート（簡易版）")
@@ -847,3 +1290,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# streamlit run a30_30_rag_search.py --server.port=8501
