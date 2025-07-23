@@ -1,349 +1,926 @@
-# helper_rag.py 設計書
-
-## 1. 概要書
-
-### 1.1 処理の概要
-RAGデータ前処理アプリケーション群で共通利用されるヘルパーモジュール。4種類のデータセット（カスタマーサポートFAQ、医療QA、科学・技術QA、法律・判例QA）に対応した統一的な前処理機能を提供する。
-
-**主要機能:**
-- OpenAIモデル設定・料金管理
-- データセット設定の統一管理
-- UI関数群（モデル選択、情報表示）
-- データ処理関数群（クレンジング、検証、変換）
-- ファイル保存・ダウンロード機能
-- ページ設定・レイアウト機能
-
-### 1.2 mainの処理の流れ
-※ helper_rag.pyはライブラリモジュールのため、main関数は存在しない
-
-**モジュール利用の流れ:**
-
-インポート
-├─ 各RAGアプリからの関数インポート
-└─ 設定クラスの利用
-初期設定
-├─ setup_page_config() でページ設定
-├─ setup_page_header() でヘッダー設定
-└─ setup_sidebar_header() でサイドバー設定
-UI構築
-├─ select_model() でモデル選択
-└─ show_model_info() でモデル情報表示
-データ処理
-├─ load_dataset() でファイル読み込み
-├─ validate_data() でデータ検証
-├─ process_rag_data() で前処理実行
-└─ display_statistics() で統計表示
-出力処理
-├─ create_download_data() でダウンロード用データ作成
-├─ save_files_to_output() でファイル保存
-└─ show_usage_instructions() で使用方法表示
-
-
-## 2. 関数一覧
-
-### 2.1 設定管理クラス
-
-| クラス/メソッド名 | 処理概要 |
-|------------------|----------|
-| `AppConfig` | OpenAIモデルの設定・料金・制限を管理 |
-| `AppConfig.get_model_limits()` | 指定モデルの制限情報取得 |
-| `AppConfig.get_model_pricing()` | 指定モデルの料金情報取得 |
-| `RAGConfig` | データセット設定の統一管理 |
-| `RAGConfig.get_config()` | データセット設定取得 |
-| `RAGConfig.get_all_datasets()` | 全データセットタイプ取得 |
-| `RAGConfig.get_dataset_by_port()` | ポート番号からデータセット特定 |
-| `TokenManager` | トークン数・コスト計算管理 |
-| `TokenManager.count_tokens()` | テキストのトークン数推定 |
-| `TokenManager.estimate_cost()` | API使用コスト推定 |
-
-### 2.2 デコレータ・ユーティリティ
-
-| 関数名 | 処理概要 |
-|--------|----------|
-| `safe_execute()` | 関数実行の安全化デコレータ |
-
-### 2.3 UI関数群
-
-| 関数名 | 処理概要 |
-|--------|----------|
-| `select_model()` | OpenAIモデル選択UI |
-| `show_model_info()` | 選択モデルの詳細情報表示 |
-| `estimate_token_usage()` | 処理済みデータのトークン使用量推定表示 |
-
-### 2.4 データ処理関数群
-
-| 関数名 | 処理概要 |
-|--------|----------|
-| `clean_text()` | テキストクレンジング処理 |
-| `combine_columns()` | 複数列の結合処理（データセット対応） |
-| `validate_data()` | データ品質検証 |
-| `load_dataset()` | CSVファイル読み込み・基本検証 |
-| `process_rag_data()` | RAG用データ前処理実行 |
-| `create_download_data()` | ダウンロード用データ作成 |
-| `display_statistics()` | 処理前後統計情報表示 |
-
-### 2.5 ファイル保存関数群
-
-| 関数名 | 処理概要 |
-|--------|----------|
-| `create_output_directory()` | OUTPUTディレクトリ作成・権限確認 |
-| `save_files_to_output()` | 処理済みデータのファイル保存 |
-
-### 2.6 ページ設定関数群
-
-| 関数名 | 処理概要 |
-|--------|----------|
-| `show_usage_instructions()` | データセット別使用方法説明表示 |
-| `setup_page_config()` | Streamlitページ設定初期化 |
-| `setup_page_header()` | ページヘッダー設定 |
-| `setup_sidebar_header()` | サイドバーヘッダー設定 |
-
-## 3. 関数の詳細設計書
-
-### 3.1 AppConfig.get_model_limits()
-
-**処理概要:**
-指定されたOpenAIモデルの制限情報（最大トークン数、最大出力トークン数）を取得する。
-
-**処理の流れ:**
-
-- モデル名をキーとしてMODEL_LIMITS辞書を検索
-- 該当モデルの制限情報を取得
-- 存在しない場合はデフォルト値を返却
-
-
-**IPO:**
-- **INPUT:** `model` (str) - モデル名
-- **PROCESS:** 辞書検索・デフォルト値設定
-- **OUTPUT:** `Dict[str, int]` - {"max_tokens": int, "max_output": int}
-
-### 3.2 clean_text()
-
-**処理概要:**
-テキストデータのクレンジング処理を実行し、RAG用に最適化されたテキストに変換する。
-
-**処理の流れ:**
-
-- 入力値検証（None・空文字チェック）
-- 文字列型への変換
-- 改行文字の空白への置換
-- 連続空白の正規化
-- 先頭・末尾空白の除去
-- 引用符の正規化
-- クレンジング済みテキストの返却
-
-
-**IPO:**
-- **INPUT:** `text` (str) - クレンジング対象テキスト
-- **PROCESS:** 改行・空白・引用符の正規化
-- **OUTPUT:** `str` - クレンジング済みテキスト
-
-### 3.3 combine_columns()
-
-**処理概要:**
-データセットタイプに応じて複数列を結合し、RAG用の統合テキストを生成する。
-
-**処理の流れ:**
-
-データセット設定の取得
-必須列リストの取得
-各列データの抽出・クレンジング
-医療QA特別処理（大文字小文字対応）
-├─ 列名マッピング作成
-├─ question, complex_cot, response の識別
-└─ 医療QA用結合処理
-標準結合処理
-結合テキストの返却
-
-
-**IPO:**
-- **INPUT:**
-  - `row` (pd.Series) - 行データ
-  - `dataset_type` (str) - データセットタイプ
-- **PROCESS:** データセット対応列結合、特別処理適用
-- **OUTPUT:** `str` - 結合済みテキスト
-
-### 3.4 load_dataset()
-
-**処理概要:**
-アップロードされたCSVファイルを読み込み、基本的なデータ検証を実行する。
-
-**処理の流れ:**
-
-CSVファイル読み込み（pandas）
-validate_data()による基本検証実行
-読み込み結果のログ出力
-データフレームと検証結果の返却
-
-
-**IPO:**
-- **INPUT:**
-  - `uploaded_file` - Streamlitアップロードファイル
-  - `dataset_type` (str, optional) - データセットタイプ
-- **PROCESS:** CSV読み込み、データ検証実行
-- **OUTPUT:** `Tuple[pd.DataFrame, List[str]]` - (データフレーム, 検証結果)
-
-### 3.5 process_rag_data()
-
-**処理概要:**
-RAG用データの包括的前処理を実行し、クレンジング・正規化・結合を行う。
-
-**処理の流れ:**
-
-データフレームコピー作成
-重複行除去
-├─ drop_duplicates()実行
-└─ 除去件数カウント
-空行除去
-├─ dropna(how='all')実行
-└─ 除去件数カウント
-インデックスリセット
-各列のクレンジング
-├─ 必須列リスト取得
-├─ 大文字小文字対応列名マッチング
-└─ clean_text()適用
-列結合処理（オプション）
-├─ combine_columns()実行
-├─ Combined_Text列作成
-└─ 空結合テキスト除去
-処理済みデータ返却
-
-
-**IPO:**
-- **INPUT:**
-  - `df` (pd.DataFrame) - 処理対象データフレーム
-  - `dataset_type` (str) - データセットタイプ
-  - `combine_columns_option` (bool) - 列結合オプション
-- **PROCESS:** 重複・空行除去、クレンジング、列結合
-- **OUTPUT:** `pd.DataFrame` - 前処理済みデータフレーム
-
-### 3.6 save_files_to_output()
-
-**処理概要:**
-処理済みデータをOUTPUTフォルダに複数形式で保存し、メタデータも生成する。
-
-**処理の流れ:**
-
-OUTPUTディレクトリ作成・確認
-タイムスタンプ生成
-CSVファイル保存
-├─ ファイル名生成（dataset_type, 行数, timestamp）
-├─ UTF-8エンコーディングで保存
-└─ 保存成功確認
-テキストファイル保存（条件付き）
-├─ text_dataの存在確認
-├─ dataset_type.txt形式で保存
-└─ 保存成功確認
-メタデータファイル保存
-├─ 処理情報の辞書作成
-├─ JSON形式で保存
-└─ 保存成功確認
-保存ファイル情報返却
-
-
-**IPO:**
-- **INPUT:**
-  - `df_processed` - 処理済みデータフレーム
-  - `dataset_type` (str) - データセットタイプ
-  - `csv_data` (str) - CSVデータ
-  - `text_data` (str, optional) - テキストデータ
-- **PROCESS:** ディレクトリ作成、ファイル保存、メタデータ生成
-- **OUTPUT:** `Dict[str, str]` - 保存ファイルパス辞書
-
-### 3.7 setup_page_config()
-
-**処理概要:**
-データセットタイプに応じたStreamlitページ設定の初期化を行う。
-
-**処理の流れ:**
-
-データセット設定の取得
-st.set_page_config()実行
-├─ page_title設定（データセット名+前処理）
-├─ page_icon設定（データセット固有アイコン）
-├─ layout="wide"設定
-└─ initial_sidebar_state="expanded"設定
-例外処理（既に設定済みの場合をハンドリング）
-
-
-**IPO:**
-- **INPUT:** `dataset_type` (str) - データセットタイプ
-- **PROCESS:** 設定取得、Streamlitページ設定適用
-- **OUTPUT:** None (副作用: Streamlitページ設定変更)
-
-## 4. 不足情報の指摘
-
-### 4.1 技術仕様の不足
-
-1. **パフォーマンス仕様**
-   - 各関数の処理時間制限
-   - メモリ使用量上限
-   - 最大処理可能データサイズ
-   - 大容量ファイル処理時の分割処理仕様
-
-2. **トークン推定精度**
-   - count_tokens()の推定精度に関する仕様
-   - 実際のOpenAI APIとの誤差許容範囲
-   - モデル別の推定ロジック調整要否
-
-3. **ファイル形式詳細**
-   - 対応CSVエンコーディング一覧
-   - 区切り文字の対応範囲
-   - ファイルサイズ制限
-   - 不正ファイル検出仕様
-
-### 4.2 エラーハンドリング仕様の不足
-
-1. **safe_execute デコレータ**
-   - エラー分類・レベル別処理
-   - リトライ機能の有無
-   - エラー通知方法
-   - ログ出力レベル制御
-
-2. **ファイル保存エラー**
-   - ディスク容量不足時の処理
-   - 権限エラー時の代替手段
-   - ファイル名重複時の処理
-   - 部分保存失敗時のロールバック
-
-### 4.3 データ品質管理仕様の不足
-
-1. **データ検証詳細**
-   - validate_data()の検証項目詳細化
-   - データセット特有の検証ルール
-   - 警告レベルと処理継続判定
-   - データ品質スコア算出
-
-2. **クレンジング処理詳細**
-   - clean_text()の処理対象文字種
-   - 保護すべき特殊文字の定義
-   - 多言語対応範囲
-   - カスタムクレンジングルール対応
-
-### 4.4 設定管理仕様の不足
-
-1. **外部設定ファイル**
-   - 設定ファイルの形式・場所
-   - 環境別設定の切り替え方法
-   - 動的設定変更の対応
-   - 設定値検証機能
-
-2. **ログ設定**
-   - ログレベル設定の詳細
-   - ログファイルローテーション
-   - ログフォーマット標準化
-   - デバッグモード対応
-
-### 4.5 セキュリティ・運用仕様の不足
-
-1. **セキュリティ要件**
-   - アップロードファイルのスキャン
-   - パストラバーサル対策
-   - 一時ファイルの安全な削除
-   - 個人情報検出・保護
-
-2. **運用・監視要件**
-   - ヘルスチェック機能
-   - メトリクス収集項目
-   - アラート条件定義
-   - バックアップ・リストア手順再試行Claudeは間違えることがあります。回答内容を必ずご確認ください。
+# 📋 helper_rag.py 設計書
+
+## 📝 目次
+
+1. [📖 概要書](#📖-概要書)
+2. [🔧 システム構成](#🔧-システム構成)
+3. [📋 関数一覧](#📋-関数一覧)
+4. [📑 関数詳細設計](#📑-関数詳細設計)
+5. [⚙️ 技術仕様](#⚙️-技術仕様)
+6. [🚨 エラーハンドリング](#🚨-エラーハンドリング)
+
+---
+
+## 📖 概要書
+
+### 🎯 処理の概要
+
+**RAGデータ前処理の共通機能ライブラリ**
+
+helper_rag.pyは、RAG（Retrieval-Augmented Generation）用データの前処理を行う複数のStreamlitアプリケーション間で共有される共通機能ライブラリです。複数のデータセット（カスタマーサポートFAQ、医療QA、科学技術QA、法律判例QA）に対応した統一的なインターフェースを提供し、効率的なRAGデータ前処理を実現します。
+
+#### 🌟 主要機能カテゴリ
+
+| カテゴリ | 機能群 | 説明 |
+|---------|--------|------|
+| 🎛️ **設定管理** | AppConfig・RAGConfig | OpenAIモデル設定・データセット設定の一元管理 |
+| 🎨 **UI共通機能** | select_model・show_model_info | Streamlit UI コンポーネントの標準化 |
+| 📄 **データ処理** | load_dataset・process_rag_data | CSV読み込み・前処理の共通化 |
+| 🔢 **トークン管理** | TokenManager・estimate_token_usage | トークン計算・コスト推定 |
+| 💾 **ファイル保存** | save_files_to_output・create_download_data | 処理結果の標準的な保存機能 |
+| 🔧 **ユーティリティ** | safe_execute・setup_page_config | エラーハンドリング・ページ設定 |
+
+#### 🔄 共通処理フロー
+
+```mermaid
+graph TD
+    A["App Config Loading"] --> B["UI Setup"]
+    B --> C["Model Selection"]
+    C --> D["File Upload"]
+    D --> E["Data Validation"]
+    E --> F["RAG Preprocessing"]
+    F --> G["Token Analysis"]
+    G --> H["Statistics Display"]
+    H --> I["Download & Save"]
+```
+
+### 🔄 主要処理の流れ（共通機能として）
+
+```mermaid
+flowchart TD
+    Start(["Helper Module Load"]) --> Config["AppConfig/RAGConfig Initialize"]
+    Config --> UI["UI Components Setup"]
+    UI --> Model["Model Selection UI"]
+    Model --> Upload["File Upload Handler"]
+
+    Upload --> Load["load_dataset()"]
+    Load --> Validate["validate_data()"]
+    Validate --> Process["process_rag_data()"]
+    Process --> Token["estimate_token_usage()"]
+
+    Token --> Stats["display_statistics()"]
+    Stats --> Download["create_download_data()"]
+    Download --> Save["save_files_to_output()"]
+
+    Save --> End(["Helper Functions Complete"])
+```
+
+---
+
+## 🔧 システム構成
+
+### 📦 主要コンポーネント
+
+```mermaid
+classDiagram
+    class AppConfig {
+        +list AVAILABLE_MODELS
+        +string DEFAULT_MODEL
+        +dict MODEL_PRICING
+        +dict MODEL_LIMITS
+        +get_model_limits()
+        +get_model_pricing()
+    }
+
+    class RAGConfig {
+        +dict DATASET_CONFIGS
+        +get_config()
+        +get_all_datasets()
+        +get_dataset_by_port()
+    }
+
+    class TokenManager {
+        +count_tokens()
+        +estimate_cost()
+    }
+
+    class UIFunctions {
+        +select_model()
+        +show_model_info()
+        +estimate_token_usage()
+        +setup_page_config()
+        +setup_page_header()
+        +setup_sidebar_header()
+    }
+
+    class DataProcessing {
+        +clean_text()
+        +combine_columns()
+        +validate_data()
+        +load_dataset()
+        +process_rag_data()
+        +display_statistics()
+    }
+
+    class FileOperations {
+        +create_download_data()
+        +create_output_directory()
+        +save_files_to_output()
+    }
+
+    AppConfig --> TokenManager
+    RAGConfig --> DataProcessing
+    UIFunctions --> AppConfig
+    DataProcessing --> TokenManager
+    FileOperations --> RAGConfig
+```
+
+### 📋 データフロー（共通処理）
+
+```mermaid
+graph TD
+    A["Dataset Configuration (RAGConfig)"] --> B["Model Selection (AppConfig)"]
+    B --> C["File Upload & Validation"]
+    C --> D["Text Cleaning & Processing"]
+    D --> E["Column Combination"]
+    E --> F["Token Analysis (TokenManager)"]
+    F --> G["Statistics Generation"]
+    G --> H["Download Data Creation"]
+    H --> I["File Output (JSON/CSV/TXT)"]
+```
+
+---
+
+## 📋 関数一覧
+
+### 🎛️ 設定管理クラス
+
+| 関数名 | 分類 | 処理概要 | 重要度 |
+|--------|------|----------|---------|
+| `AppConfig.get_model_limits()` | ⚙️ 設定 | モデル別制限（最大トークン数）取得 | ⭐⭐⭐ |
+| `AppConfig.get_model_pricing()` | 💰 設定 | モデル別料金情報取得 | ⭐⭐⭐ |
+| `RAGConfig.get_config()` | 📊 設定 | データセット別設定取得 | ⭐⭐⭐ |
+| `RAGConfig.get_all_datasets()` | 📋 設定 | 全データセットリスト取得 | ⭐⭐ |
+| `RAGConfig.get_dataset_by_port()` | 🔍 設定 | ポート番号からデータセット特定 | ⭐⭐ |
+
+### 🔢 トークン管理クラス
+
+| 関数名 | 分類 | 処理概要 | 重要度 |
+|--------|------|----------|---------|
+| `TokenManager.count_tokens()` | 🔢 計算 | テキストのトークン数推定 | ⭐⭐⭐ |
+| `TokenManager.estimate_cost()` | 💰 計算 | API使用コスト推定 | ⭐⭐⭐ |
+
+### 🎨 UI関数群
+
+| 関数名 | 分類 | 処理概要 | 重要度 |
+|--------|------|----------|---------|
+| `select_model()` | 🤖 UI | モデル選択セレクトボックス表示 | ⭐⭐⭐ |
+| `show_model_info()` | 📊 UI | 選択モデルの詳細情報表示 | ⭐⭐⭐ |
+| `estimate_token_usage()` | 🔢 UI | トークン使用量・コスト推定表示 | ⭐⭐⭐ |
+| `setup_page_config()` | 🎨 UI | Streamlitページ設定初期化 | ⭐⭐ |
+| `setup_page_header()` | 🎨 UI | ページヘッダー設定 | ⭐⭐ |
+| `setup_sidebar_header()` | 🎨 UI | サイドバーヘッダー設定 | ⭐⭐ |
+
+### 📄 データ処理関数群
+
+| 関数名 | 分類 | 処理概要 | 重要度 |
+|--------|------|----------|---------|
+| `clean_text()` | 🧹 処理 | テキストクレンジング（改行・空白正規化） | ⭐⭐⭐ |
+| `combine_columns()` | 🔗 処理 | データセット対応の列結合処理 | ⭐⭐⭐ |
+| `validate_data()` | ✅ 検証 | データ品質検証・統計情報生成 | ⭐⭐⭐ |
+| `load_dataset()` | 📥 処理 | CSVファイル読み込み・基本検証 | ⭐⭐⭐ |
+| `process_rag_data()` | ⚙️ 処理 | RAG用データ前処理パイプライン | ⭐⭐⭐ |
+| `display_statistics()` | 📊 表示 | 処理前後統計情報表示 | ⭐⭐⭐ |
+
+### 💾 ファイル操作関数群
+
+| 関数名 | 分類 | 処理概要 | 重要度 |
+|--------|------|----------|---------|
+| `create_download_data()` | 📦 作成 | ダウンロード用データ作成（CSV・TXT） | ⭐⭐⭐ |
+| `create_output_directory()` | 📁 作成 | OUTPUTディレクトリ作成・権限確認 | ⭐⭐ |
+| `save_files_to_output()` | 💾 保存 | 処理済みデータの標準的な保存 | ⭐⭐⭐ |
+
+### 🔧 ユーティリティ関数
+
+| 関数名 | 分類 | 処理概要 | 重要度 |
+|--------|------|----------|---------|
+| `safe_execute()` | 🛡️ デコレータ | エラーハンドリングデコレータ | ⭐⭐⭐ |
+| `show_usage_instructions()` | 📖 説明 | データセット別使用方法説明表示 | ⭐⭐ |
+
+---
+
+## 📑 関数詳細設計
+
+### 🎛️ AppConfig.get_model_limits()
+
+#### 🎯 処理概要
+指定されたOpenAIモデルのトークン制限（最大入力・出力トークン数）を取得
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Receive model parameter"]
+    B --> C{"Model exists in MODEL_LIMITS?"}
+    C -->|Yes| D["Return model limits"]
+    C -->|No| E["Return default limits"]
+    D --> F["Function End"]
+    E --> F
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `model: str` - OpenAIモデル名 |
+| **PROCESS** | MODEL_LIMITS辞書から該当モデルの制限を検索 |
+| **OUTPUT** | `Dict[str, int]` - {"max_tokens": int, "max_output": int} |
+
+#### 📊 対応モデル詳細
+
+```python
+MODEL_LIMITS = {
+    "gpt-4o": {"max_tokens": 128000, "max_output": 4096},
+    "gpt-4o-mini": {"max_tokens": 128000, "max_output": 4096},
+    "gpt-4.1": {"max_tokens": 128000, "max_output": 4096},
+    "gpt-4.1-mini": {"max_tokens": 128000, "max_output": 4096},
+    "o1": {"max_tokens": 128000, "max_output": 32768},
+    "o1-mini": {"max_tokens": 128000, "max_output": 65536},
+    "o3": {"max_tokens": 200000, "max_output": 100000},
+    "o3-mini": {"max_tokens": 200000, "max_output": 100000},
+    "o4": {"max_tokens": 256000, "max_output": 128000},
+    "o4-mini": {"max_tokens": 256000, "max_output": 128000},
+}
+```
+
+---
+
+### 📊 RAGConfig.get_config()
+
+#### 🎯 処理概要
+データセットタイプに応じた設定情報（必須列・アイコン・説明等）を取得
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Receive dataset_type parameter"]
+    B --> C{"Dataset type exists in DATASET_CONFIGS?"}
+    C -->|Yes| D["Return dataset config"]
+    C -->|No| E["Return unknown dataset config"]
+    D --> F["Function End"]
+    E --> F
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `dataset_type: str` - データセットタイプ識別子 |
+| **PROCESS** | DATASET_CONFIGS辞書から該当データセット設定を検索 |
+| **OUTPUT** | `Dict[str, Any]` - データセット設定情報 |
+
+#### 📊 対応データセット
+
+```python
+DATASET_CONFIGS = {
+    "customer_support_faq": {
+        "name": "カスタマーサポート・FAQ",
+        "icon": "💬",
+        "required_columns": ["question", "answer"],
+        "description": "カスタマーサポートFAQデータセット",
+        "combine_template": "{question} {answer}",
+        "port": 8501
+    },
+    "medical_qa": {
+        "name": "医療QAデータ",
+        "icon": "🏥",
+        "required_columns": ["Question", "Complex_CoT", "Response"],
+        "description": "医療質問回答データセット",
+        "combine_template": "{question} {complex_cot} {response}",
+        "port": 8503
+    }
+    # 他のデータセット設定...
+}
+```
+
+---
+
+### 🔢 TokenManager.count_tokens()
+
+#### 🎯 処理概要
+テキストのトークン数を簡易推定（日本語・英語文字数ベース）
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Check text is empty"]
+    B -->|Empty| C["Return 0"]
+    B -->|Not empty| D["Count Japanese characters (ord > 127)"]
+    D --> E["Count English characters"]
+    E --> F["Calculate: japanese_chars * 0.5 + english_chars * 0.25"]
+    F --> G["Return max(1, estimated_tokens)"]
+    C --> H["Function End"]
+    G --> H
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `text: str` - トークン数を計算するテキスト<br>`model: str = None` - モデル名（現在未使用） |
+| **PROCESS** | 文字種別カウント → 重み付け計算 → 最小値保証 |
+| **OUTPUT** | `int` - 推定トークン数 |
+
+#### 🔍 推定アルゴリズム
+
+```python
+推定式:
+japanese_chars = len([c for c in text if ord(c) > 127])
+english_chars = len(text) - japanese_chars
+estimated_tokens = int(japanese_chars * 0.5 + english_chars * 0.25)
+return max(1, estimated_tokens)
+```
+
+---
+
+### 🤖 select_model()
+
+#### 🎯 処理概要
+OpenAIモデル選択用のStreamlitセレクトボックスUI表示
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Get AVAILABLE_MODELS list"]
+    B --> C["Set DEFAULT_MODEL"]
+    C --> D{"Default model in list?"}
+    D -->|Yes| E["Set default_index"]
+    D -->|No| F["Set default_index = 0"]
+    E --> G["Display st.sidebar.selectbox"]
+    F --> G
+    G --> H["Return selected model"]
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `key: str = "model_selection"` - Streamlit コンポーネントキー |
+| **PROCESS** | モデルリスト取得 → デフォルト設定 → セレクトボックス表示 |
+| **OUTPUT** | `str` - 選択されたモデル名 |
+
+#### 🎨 UI仕様
+
+```python
+st.sidebar.selectbox(
+    "🤖 モデルを選択",
+    models,
+    index=default_index,
+    key=key,
+    help="利用するOpenAIモデルを選択してください"
+)
+```
+
+---
+
+### 🧹 clean_text()
+
+#### 🎯 処理概要
+RAG用テキストの標準的なクレンジング（改行・空白・引用符の正規化）
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B{"Text is empty or NaN?"}
+    B -->|Yes| C["Return empty string"]
+    B -->|No| D["Convert to string"]
+    D --> E["Replace newlines with spaces"]
+    E --> F["Normalize consecutive spaces"]
+    F --> G["Strip leading/trailing spaces"]
+    G --> H["Normalize quotation marks"]
+    H --> I["Return cleaned text"]
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `text: str` - クレンジング対象テキスト |
+| **PROCESS** | 改行除去 → 空白正規化 → 引用符正規化 → トリム |
+| **OUTPUT** | `str` - クレンジング済みテキスト |
+
+#### 🔧 クレンジング処理詳細
+
+```python
+処理ステップ:
+1. 改行・復帰文字を空白に変換: '\n', '\r' → ' '
+2. 連続空白を単一空白に統一: r'\s+' → ' '
+3. 先頭・末尾空白を除去: strip()
+4. 引用符の正規化:
+   - '"' , '"' → '"'
+   - ''' , ''' → "'"
+```
+
+---
+
+### 🔗 combine_columns()
+
+#### 🎯 処理概要
+データセット対応の複数列結合（RAG用自然文作成）
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Get dataset config"]
+    B --> C["Get required_columns list"]
+    C --> D["Extract & clean each column"]
+    D --> E{"Is medical_qa dataset?"}
+    E -->|Yes| F["Special medical QA processing"]
+    E -->|No| G["Standard column combination"]
+    F --> H["Map columns with case-insensitive search"]
+    H --> I["Combine medical columns"]
+    G --> J["Combine required columns"]
+    I --> K["Return combined text"]
+    J --> K
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `row: pd.Series` - データフレーム行<br>`dataset_type: str` - データセット識別子 |
+| **PROCESS** | 設定取得 → 列抽出・クリーニング → データセット別結合 |
+| **OUTPUT** | `str` - 結合済みテキスト |
+
+#### 🔍 データセット別処理
+
+##### 🏥 医療QA特別処理
+```python
+# 大文字小文字を考慮した列名マッピング
+medical_cols = {}
+for col in row.index:
+    col_lower = col.lower()
+    if 'question' in col_lower:
+        medical_cols['question'] = clean_text(str(row.get(col, '')))
+    elif 'complex_cot' in col_lower or 'cot' in col_lower:
+        medical_cols['complex_cot'] = clean_text(str(row.get(col, '')))
+    elif 'response' in col_lower:
+        medical_cols['response'] = clean_text(str(row.get(col, '')))
+```
+
+##### 💬 標準処理
+```python
+# 設定された required_columns を順序通りに結合
+cleaned_values = []
+for col in required_columns:
+    if col in row.index:
+        value = row.get(col, '')
+        cleaned_text = clean_text(str(value))
+        if cleaned_text:
+            cleaned_values.append(cleaned_text)
+```
+
+---
+
+### ✅ validate_data()
+
+#### 🎯 処理概要
+データセット対応の品質検証・統計情報生成
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Generate basic statistics"]
+    B --> C{"Dataset type provided?"}
+    C -->|Yes| D["Check required columns"]
+    D --> E["Case-insensitive column mapping"]
+    E --> F["Report missing/found columns"]
+    C -->|No| F
+    F --> G["Analyze empty values per column"]
+    G --> H["Check duplicate rows"]
+    H --> I["Return validation issues list"]
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `df: pd.DataFrame` - 検証対象データフレーム<br>`dataset_type: str = None` - データセット識別子 |
+| **PROCESS** | 基本統計 → 必須列確認 → 空値分析 → 重複確認 |
+| **OUTPUT** | `List[str]` - 検証結果メッセージリスト |
+
+#### 📊 検証項目詳細
+
+```python
+検証項目:
+1. 基本統計: 総行数, 総列数
+2. 必須列確認: データセット別必須列の存在確認
+3. 空値分析: 各列の空値数・割合
+4. 重複行確認: 完全重複行の検出
+
+出力例:
+[
+    "総行数: 1,500",
+    "総列数: 3",
+    "✅ 必須列確認済み: ['question', 'answer']",
+    "question列: 空値 5個 (0.3%)",
+    "answer列: 空値 12個 (0.8%)",
+    "✅ 重複行なし"
+]
+```
+
+---
+
+### ⚙️ process_rag_data()
+
+#### 🎯 処理概要
+RAG用データの包括的前処理パイプライン実行
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Copy original DataFrame"]
+    B --> C["Remove duplicate rows"]
+    C --> D["Remove empty rows (all NaN)"]
+    D --> E["Reset DataFrame index"]
+    E --> F["Get dataset config"]
+    F --> G["Clean required columns"]
+    G --> H{"Combine columns option?"}
+    H -->|Yes| I["Apply combine_columns()"]
+    I --> J["Filter empty combined text"]
+    H -->|No| K["Skip column combination"]
+    J --> L["Return processed DataFrame"]
+    K --> L
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `df: pd.DataFrame` - 元データフレーム<br>`dataset_type: str` - データセット識別子<br>`combine_columns_option: bool = True` - 列結合オプション |
+| **PROCESS** | 重複除去 → 空行除去 → クレンジング → 列結合 → フィルタリング |
+| **OUTPUT** | `pd.DataFrame` - 前処理済みデータフレーム |
+
+#### 🔧 前処理ステップ詳細
+
+```python
+前処理パイプライン:
+1. データコピー: df.copy()
+2. 重複除去: drop_duplicates()
+3. 空行除去: dropna(how='all')
+4. インデックスリセット: reset_index(drop=True)
+5. 列クレンジング: clean_text() 各必須列に適用
+6. 列結合: combine_columns() (オプション)
+7. 空結合除去: Combined_Text が空の行を除去
+```
+
+---
+
+### 💾 save_files_to_output()
+
+#### 🎯 処理概要
+処理済みデータの標準的な保存（CSV・TXT・メタデータJSON）
+
+#### 📊 処理の流れ
+```mermaid
+graph TD
+    A["Function Start"] --> B["Create OUTPUT directory"]
+    B --> C["Generate timestamp"]
+    C --> D["Save CSV file"]
+    D --> E["Check text_data exists"]
+    E -->|Yes| F["Save TXT file"]
+    E -->|No| G["Skip TXT file"]
+    F --> H["Create metadata"]
+    G --> H
+    H --> I["Save metadata JSON"]
+    I --> J["Return saved files dict"]
+```
+
+#### 📋 IPO設計
+
+| 項目 | 内容 |
+|------|------|
+| **INPUT** | `df_processed: pd.DataFrame` - 処理済みデータ<br>`dataset_type: str` - データセット識別子<br>`csv_data: str` - CSV文字列<br>`text_data: str = None` - テキスト文字列 |
+| **PROCESS** | ディレクトリ作成 → ファイル保存 → メタデータ作成 |
+| **OUTPUT** | `Dict[str, str]` - 保存されたファイルパス辞書 |
+
+#### 📁 保存ファイル仕様
+
+```python
+保存ファイル構成:
+1. CSV: "preprocessed_{dataset_type}_{rows}rows_{timestamp}.csv"
+2. TXT: "{dataset_type}.txt" (結合テキスト)
+3. JSON: "metadata_{dataset_type}_{timestamp}.json"
+
+メタデータ構造:
+{
+    "dataset_type": str,
+    "processed_rows": int,
+    "processing_timestamp": str,
+    "created_at": str (ISO format),
+    "files_created": List[str],
+    "processing_info": {
+        "original_rows": int,
+        "removed_rows": int
+    }
+}
+```
+
+---
+
+## ⚙️ 技術仕様
+
+### 📦 依存ライブラリ
+
+| ライブラリ | バージョン | 用途 | 重要度 |
+|-----------|-----------|------|---------|
+| `streamlit` | 最新 | 🎨 Web UIフレームワーク | ⭐⭐⭐ |
+| `pandas` | 最新 | 📊 データ処理・分析 | ⭐⭐⭐ |
+| `re` | 標準 | 🔤 正規表現処理 | ⭐⭐⭐ |
+| `io` | 標準 | 📄 ファイルI/O操作 | ⭐⭐ |
+| `logging` | 標準 | 📝 ログ管理 | ⭐⭐ |
+| `json` | 標準 | 📋 JSON処理 | ⭐⭐ |
+| `pathlib` | 標準 | 📁 パス操作 | ⭐⭐ |
+| `datetime` | 標準 | 📅 日時処理 | ⭐⭐ |
+| `functools` | 標準 | 🔧 関数デコレータ | ⭐⭐ |
+
+### 🗃️ データセット対応仕様
+
+#### 📊 サポートデータセット
+
+```yaml
+Supported_Datasets:
+  customer_support_faq:
+    name: "カスタマーサポート・FAQ"
+    icon: "💬"
+    required_columns: ["question", "answer"]
+    port: 8501
+    combine_template: "{question} {answer}"
+
+  medical_qa:
+    name: "医療QAデータ"
+    icon: "🏥"
+    required_columns: ["Question", "Complex_CoT", "Response"]
+    port: 8503
+    combine_template: "{question} {complex_cot} {response}"
+
+  sciq_qa:
+    name: "科学・技術QA（SciQ）"
+    icon: "🔬"
+    required_columns: ["question", "correct_answer"]
+    port: 8504
+    combine_template: "{question} {correct_answer}"
+
+  legal_qa:
+    name: "法律・判例QA"
+    icon: "⚖️"
+    required_columns: ["question", "answer"]
+    port: 8505
+    combine_template: "{question} {answer}"
+```
+
+### 🤖 OpenAIモデル仕様
+
+#### 📋 対応モデル一覧
+
+```yaml
+Available_Models:
+  standard_models:
+    - "gpt-4o"           # 高品質マルチモーダル
+    - "gpt-4o-mini"      # 効率型マルチモーダル
+    - "gpt-4.1"          # 次世代高品質
+    - "gpt-4.1-mini"     # 次世代効率型
+
+  audio_models:
+    - "gpt-4o-audio-preview"      # 音声対応プレビュー
+    - "gpt-4o-mini-audio-preview" # 音声対応効率型
+
+  reasoning_models:
+    - "o1"      # 推論特化
+    - "o1-mini" # 推論効率型
+    - "o3"      # 高度推論
+    - "o3-mini" # 高度推論効率型
+    - "o4"      # 最新推論
+    - "o4-mini" # 最新推論効率型
+```
+
+#### 💰 料金設定（1000トークンあたり）
+
+```yaml
+Model_Pricing:
+  gpt-4o: {input: 0.005, output: 0.015}
+  gpt-4o-mini: {input: 0.00015, output: 0.0006}
+  gpt-4.1: {input: 0.0025, output: 0.01}
+  gpt-4.1-mini: {input: 0.0001, output: 0.0004}
+  o1: {input: 0.015, output: 0.06}
+  o1-mini: {input: 0.003, output: 0.012}
+  o3: {input: 0.03, output: 0.12}
+  o3-mini: {input: 0.006, output: 0.024}
+  o4: {input: 0.05, output: 0.20}
+  o4-mini: {input: 0.01, output: 0.04}
+```
+
+### 🔧 前処理パイプライン仕様
+
+#### 📋 処理ステップ
+
+```yaml
+Processing_Pipeline:
+  step1_validation:
+    name: "Data Validation"
+    function: "validate_data()"
+    checks: ["rows", "columns", "required_fields", "empty_values", "duplicates"]
+
+  step2_cleaning:
+    name: "Text Cleaning"
+    function: "clean_text()"
+    operations: ["newline_removal", "space_normalization", "quote_normalization"]
+
+  step3_deduplication:
+    name: "Data Deduplication"
+    operations: ["drop_duplicates", "dropna_all", "reset_index"]
+
+  step4_combination:
+    name: "Column Combination"
+    function: "combine_columns()"
+    condition: "combine_columns_option == True"
+    output: "Combined_Text column"
+
+  step5_filtering:
+    name: "Empty Text Filtering"
+    operations: ["remove_empty_combined_text"]
+```
+
+### 📊 出力仕様
+
+#### 🗂️ 生成ファイル
+
+```yaml
+Output_Files:
+  csv_file:
+    name_pattern: "preprocessed_{dataset_type}_{rows}rows_{timestamp}.csv"
+    encoding: "UTF-8"
+    format: "Pandas DataFrame to CSV"
+    includes: ["all_processed_columns", "Combined_Text"]
+
+  text_file:
+    name_pattern: "{dataset_type}.txt"
+    encoding: "UTF-8"
+    format: "Plain text, one record per line"
+    content: "Combined_Text column only"
+
+  metadata_file:
+    name_pattern: "metadata_{dataset_type}_{timestamp}.json"
+    encoding: "UTF-8"
+    format: "JSON"
+    content:
+      - dataset_type
+      - processed_rows
+      - processing_timestamp
+      - created_at
+      - files_created
+      - processing_info
+```
+
+---
+
+## 🚨 エラーハンドリング
+
+### 📋 エラーカテゴリ
+
+#### 🔧 設定関連エラー
+
+| エラー種別 | 原因 | 対処法 | 影響度 |
+|-----------|------|--------|---------|
+| **未知のモデル指定** | 🤖 サポート外モデル名 | デフォルトモデルにフォールバック | 🟡 中 |
+| **未知のデータセット** | 📊 未定義データセット | デフォルト設定で継続 | 🟡 中 |
+| **設定値不正** | ⚙️ 不正な設定値 | デフォルト値使用・警告表示 | 🟠 低 |
+
+#### 📄 データ処理関連エラー
+
+| エラー種別 | 原因 | 対処法 | 影響度 |
+|-----------|------|--------|---------|
+| **CSV読み込み失敗** | 📋 ファイル形式・エンコーディング | エラー詳細表示・修正指示 | 🔴 高 |
+| **必須列不在** | 📊 データ構造不整合 | 必須列リスト表示・修正指示 | 🔴 高 |
+| **データ型エラー** | 🔢 予期しないデータ型 | 文字列変換・継続処理 | 🟡 中 |
+| **空データセット** | 📄 データ行なし | 処理停止・エラー表示 | 🔴 高 |
+| **メモリ不足** | 💾 大容量ファイル | チャンク処理提案・分割指示 | 🟡 中 |
+
+#### 🎨 UI関連エラー
+
+| エラー種別 | 原因 | 対処法 | 影響度 |
+|-----------|------|--------|---------|
+| **Streamlit設定エラー** | 🎨 page_config重複設定 | 例外キャッチ・継続処理 | 🟠 低 |
+| **セッション状態破損** | 🔄 不正なセッション操作 | セッション状態初期化 | 🟡 中 |
+| **UI表示エラー** | 🖥️ レンダリング問題 | エラー表示・代替UI提供 | 🟠 低 |
+
+#### 💾 ファイル操作関連エラー
+
+| エラー種別 | 原因 | 対処法 | 影響度 |
+|-----------|------|--------|---------|
+| **ディレクトリ作成失敗** | 🔒 権限不足・ディスク容量 | 権限確認指示・代替パス提案 | 🟡 中 |
+| **ファイル書き込み失敗** | 💾 権限・容量・I/Oエラー | 詳細診断・代替保存方法提案 | 🟡 中 |
+| **JSON作成エラー** | 📋 シリアライゼーション失敗 | 簡易メタデータで継続 | 🟠 低 |
+
+### 🛠️ エラーハンドリング戦略
+
+#### 🔧 safe_execute デコレータ
+
+```python
+@safe_execute
+def risky_function():
+    # 危険性のある処理
+    pass
+
+# 自動的に以下の処理が適用される:
+try:
+    return risky_function()
+except Exception as e:
+    logger.error(f"Error in risky_function: {str(e)}")
+    st.error(f"エラーが発生しました: {str(e)}")
+    return None
+```
+
+#### 📊 段階的エラー処理
+
+```mermaid
+graph TD
+    A["Error Detected"] --> B{"Error Type"}
+    B -->|Critical| C["Stop Processing + User Alert"]
+    B -->|Warning| D["Continue with Fallback + Warning"]
+    B -->|Info| E["Log + Continue Silently"]
+
+    C --> F["Display Detailed Error"]
+    D --> G["Show Warning Message"]
+    E --> H["Background Logging"]
+
+    F --> I["Provide Recovery Instructions"]
+    G --> J["Offer Alternative Options"]
+    H --> K["Continue Normal Flow"]
+```
+
+#### ✅ 適切なエラーメッセージ例
+
+```python
+# 📄 データ関連エラー
+st.error("❌ CSVファイルの読み込みに失敗しました")
+st.info("💡 ファイルがUTF-8エンコーディングかご確認ください")
+with st.expander("🔧 詳細エラー情報"):
+    st.code(str(error))
+
+# 🔧 処理関連エラー
+st.warning("⚠️ 一部のデータ処理でエラーが発生しました")
+st.info("💡 処理可能な部分のみで継続します")
+
+# 💾 保存関連エラー
+st.error("❌ ローカル保存に失敗しました")
+st.info("💡 ブラウザダウンロードは正常に利用できます")
+```
+
+#### 🚨 フォールバック戦略
+
+```python
+fallback_strategies = {
+    "unknown_model": {
+        "action": "Use DEFAULT_MODEL",
+        "message": "指定モデルが見つからないため、デフォルトモデルを使用"
+    },
+    "missing_columns": {
+        "action": "Partial processing with available columns",
+        "message": "利用可能な列のみで処理を継続"
+    },
+    "text_cleaning_error": {
+        "action": "Skip cleaning, use original text",
+        "message": "テキストクレンジングをスキップして元テキストを使用"
+    },
+    "file_save_error": {
+        "action": "Offer browser download only",
+        "message": "ローカル保存不可、ブラウザダウンロードのみ提供"
+    }
+}
+```
+
+---
+
+## 🎉 まとめ
+
+この設計書は、**helper_rag.py** の包括的な技術仕様と実装詳細を記載した完全なドキュメントです。
+
+### 🌟 設計のハイライト
+
+- **🔧 共通機能集約**: 複数RAGアプリ間での機能重複を排除
+- **📊 多データセット対応**: 4種類のデータセット（FAQ・医療・科学・法律）に統一対応
+- **🤖 最新モデル対応**: OpenAI最新モデル（o4シリーズまで）完全サポート
+- **🎨 UI統一化**: Streamlit UIコンポーネントの標準化・再利用化
+- **💾 柔軟な出力**: CSV・TXT・JSONメタデータの標準的な保存
+
+### 🔧 アーキテクチャ特徴
+
+- **📦 モジュール化設計**: 機能別クラス・関数の明確な分離
+- **⚙️ 設定駆動**: データセット別設定による柔軟な対応
+- **🛡️ 堅牢性重視**: 包括的なエラーハンドリング・フォールバック
+- **🔄 拡張性**: 新規データセット・モデルの容易な追加
+
+### 📈 RAG最適化機能
+
+- **🧹 専門クレンジング**: RAGに特化したテキスト前処理
+- **🔗 インテリジェント結合**: データセット特性を考慮した列結合
+- **🔢 精密トークン管理**: 日本語・英語を考慮したトークン推定
+- **📊 品質分析**: データセット品質の定量的評価
+
+### 🚀 今後の拡張可能性
+
+- 🌍 多言語データセット対応
+- 🤖 追加OpenAIモデル対応
+- 📈 高度な品質メトリクス
+- 🔄 ストリーミング処理対応
+- 📊 可視化機能強化
