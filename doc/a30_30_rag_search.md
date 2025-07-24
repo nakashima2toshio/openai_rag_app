@@ -1,13 +1,13 @@
-# 📋 a30\_30\_rag\_search.py 設計書
+# 📋 a30\_30\_rag\_search.py 設計書（改修版）
 
 ## 📝 目次
 
-1. [📖 概要書](https://claude.ai/chat/c7a72c78-2565-409b-bfb2-aa95b7532798#%F0%9F%93%96-%E6%A6%82%E8%A6%81%E6%9B%B8)
-2. [🔧 システム構成](https://claude.ai/chat/c7a72c78-2565-409b-bfb2-aa95b7532798#%F0%9F%94%A7-%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0%E6%A7%8B%E6%88%90)
-3. [📋 関数一覧](https://claude.ai/chat/c7a72c78-2565-409b-bfb2-aa95b7532798#%F0%9F%93%8B-%E9%96%A2%E6%95%B0%E4%B8%80%E8%A6%A7)
-4. [📑 関数詳細設計](https://claude.ai/chat/c7a72c78-2565-409b-bfb2-aa95b7532798#%F0%9F%93%91-%E9%96%A2%E6%95%B0%E8%A9%B3%E7%B4%B0%E8%A8%AD%E8%A8%88)
-5. [⚙️ 技術仕様](https://claude.ai/chat/c7a72c78-2565-409b-bfb2-aa95b7532798#%E2%9A%99%EF%B8%8F-%E6%8A%80%E8%A1%93%E4%BB%95%E6%A7%98)
-6. [🚨 エラーハンドリング](https://claude.ai/chat/c7a72c78-2565-409b-bfb2-aa95b7532798#%F0%9F%9A%A8-%E3%82%A8%E3%83%A9%E3%83%BC%E3%83%8F%E3%83%B3%E3%83%89%E3%83%AA%E3%83%B3%E3%82%B0)
+1. [📖 概要書](#📖-概要書)
+2. [🔧 システム構成](#🔧-システム構成)
+3. [📋 関数一覧](#📋-関数一覧)
+4. [📑 関数詳細設計](#📑-関数詳細設計)
+5. [⚙️ 技術仕様](#⚙️-技術仕様)
+6. [🚨 エラーハンドリング](#🚨-エラーハンドリング)
 
 ---
 
@@ -15,65 +15,71 @@
 
 ### 🎯 処理の概要
 
-**最新OpenAI Responses API + file\_search RAG検索システム**
+**最新OpenAI Responses API + file\_search RAG検索システム（重複問題修正版）**
 
-本アプリケーションは、OpenAIの最新Responses APIとfile\_searchツールを活用した次世代RAG（Retrieval-Augmented Generation）検索システムです。複数のVector Storeから高精度な情報検索を行い、ファイル引用付きの回答を提供します。
+本アプリケーションは、OpenAIの最新Responses APIとfile\_searchツールを活用した次世代RAG（Retrieval-Augmented Generation）検索システムです。**重複Vector Store問題を解決**し、動的Vector Store管理機能を追加した改修版です。
 
 #### 🌟 主要機能
 
+| 機能                               | 説明                                    |
+| ---------------------------------- | --------------------------------------- |
+| 🤖**最新Responses API**            | OpenAI最新APIによる高品質回答生成       |
+| 🔍**file\_search ツール**          | Vector Store統合検索機能                |
+| 📚**動的Vector Store管理**         | 自動ID更新・重複問題解決                |
+| 🔄**重複ID解決（最新優先）**       | 同名Vector Storeの作成日時優先選択      |
+| 📁**設定ファイル連携**             | vector_stores.json での永続化           |
+| 🔗**a30_020_make_vsid.py連携**     | 新規Vector Store自動認識                |
+| 📋**ファイル引用表示**             | 検索結果の出典明示                      |
+| 🌐**多言語対応**                   | 英語・日本語質問サポート                |
+| 📊**検索オプション**               | カスタマイズ可能な検索設定              |
+| 🕒**履歴管理**                     | 検索履歴の保存・再実行                  |
+| 🔒**セキュア設計**                 | 環境変数でのAPIキー管理                 |
 
-| 機能                       | 説明                              |
-| -------------------------- | --------------------------------- |
-| 🤖**最新Responses API**    | OpenAI最新APIによる高品質回答生成 |
-| 🔍**file\_search ツール**  | Vector Store統合検索機能          |
-| 📚**複数Vector Store対応** | 4種類の専門知識ベース             |
-| 📋**ファイル引用表示**     | 検索結果の出典明示                |
-| 🌐**多言語対応**           | 英語・日本語質問サポート          |
-| 📊**検索オプション**       | カスタマイズ可能な検索設定        |
-| 🕒**履歴管理**             | 検索履歴の保存・再実行            |
-| 🔒**セキュア設計**         | 環境変数でのAPIキー管理           |
-
-#### 🗃️ 対応Vector Store
+#### 🆕 改修のハイライト
 
 ```mermaid
 graph LR
-    A["User Query"] --> B["RAG Manager"]
-    B --> C{"Vector Store Selection"}
-    C -->|Customer Support| D["FAQ Knowledge Base"]
-    C -->|Science & Tech| E["Science Q&A Base"]
-    C -->|Medical| F["Medical Q&A Base"]
-    C -->|Legal| G["Legal Q&A Base"]
-    D --> H["OpenAI Response"]
-    E --> H
-    F --> H
-    G --> H
-    H --> I["User Interface"]
+    A["改修前"] --> B["重複Vector Store問題"]
+    B --> C["古いIDが選択される"]
+    C --> D["検索精度低下"]
+
+    E["改修後"] --> F["VectorStoreManager"]
+    F --> G["作成日時ソート"]
+    G --> H["最新ID優先選択"]
+    H --> I["高精度検索"]
 ```
 
-### 🔄 mainの処理の流れ
+### 🔄 mainの処理の流れ（改修版）
 
 ```mermaid
 flowchart TD
     Start(["App Start"]) --> Init["Initialize Session State"]
-    Init --> UI["Setup Streamlit UI"]
-    UI --> Manager["Get RAG Manager"]
-    Manager --> Header["Display Header & Status"]
+    Init --> VectorMgr["Initialize VectorStoreManager"]
+    VectorMgr --> UI["Setup Streamlit UI"]
+    UI --> RefreshCheck{"Auto Refresh?"}
+    RefreshCheck -->|Yes| Fetch["Fetch Latest Vector Stores"]
+    RefreshCheck -->|No| Cache["Use Cached Stores"]
+    Fetch --> Dedupe["Deduplicate by Created Time"]
+    Cache --> Dedupe
+    Dedupe --> Header["Display Header & Status"]
     Header --> Sidebar["Setup Sidebar"]
-  
+
     Sidebar --> Store["Vector Store Selection"]
     Store --> Lang["Language Selection"]
     Lang --> Options["Search Options"]
-    Options --> MainContent["Main Content Area"]
-  
+    Options --> Management["Vector Store Management UI"]
+    Management --> MainContent["Main Content Area"]
+
     MainContent --> Input["Query Input Form"]
     Input --> Submit{"Query Submitted?"}
     Submit -->|No| Wait["Wait for Input"]
-    Submit -->|Yes| Search["Execute RAG Search"]
-  
+    Submit -->|Yes| GetStoreID["Get Selected Store ID"]
+    GetStoreID --> Search["Execute RAG Search"]
+
     Search --> Response["Display Results"]
     Response --> History["Update Search History"]
     History --> Wait
-  
+
     Wait --> Footer["Display Footer"]
     Footer --> End(["App Ready"])
 ```
@@ -82,80 +88,124 @@ flowchart TD
 
 ## 🔧 システム構成
 
-### 📦 主要コンポーネント
+### 📦 主要コンポーネント（改修版）
 
 ```mermaid
 classDiagram
+    class VectorStoreManager {
+        +CONFIG_FILE_PATH : Path
+        +DEFAULT_VECTOR_STORES : dict
+        +STORE_NAME_MAPPING : dict
+        +DISPLAY_NAME_MAPPING : dict
+        +openai_client : OpenAI
+        +cache : dict
+        +last_update : datetime
+        +load_vector_stores() dict
+        +save_vector_stores() bool
+        +fetch_latest_vector_stores() dict
+        +get_vector_stores() dict
+        +refresh_and_save() dict
+        +debug_vector_stores() dict
+    }
+
     class ModernRAGManager {
-        +dict agent_sessions
-        +search_with_responses_api()
-        +search_with_agent_sdk()
-        +search()
-        -_extract_response_text()
-        -_extract_citations()
-        -_extract_tool_calls()
+        +agent_sessions : dict
+        +search_with_responses_api() tuple
+        +search_with_agent_sdk() tuple
+        +search() tuple
+        -extract_response_text() str
+        -extract_citations() list
+        -extract_tool_calls() list
     }
-  
+
     class StreamlitUI {
-        +display_search_history()
-        +display_test_questions()
-        +display_system_info()
-        +display_search_options()
-        +display_search_results()
+        +display_search_history() void
+        +display_test_questions() void
+        +display_system_info() void
+        +display_search_options() void
+        +display_search_results() void
+        +display_vector_store_management() void
     }
-  
+
     class SessionState {
-        +list search_history
-        +string current_query
-        +string selected_store
-        +string selected_language
-        +dict search_options
+        +search_history : list
+        +current_query : string
+        +selected_store : string
+        +selected_language : string
+        +search_options : dict
+        +auto_refresh_stores : bool
     }
-  
-    class VectorStores {
-        +string Customer Support FAQ
-        +string Science & Technology QA
-        +string Medical QA
-        +string Legal QA
+
+    class OpenAIAPI {
+        <<external>>
     }
-  
-    ModernRAGManager --> OpenAI_API
+
+    class ConfigFile {
+        <<file>>
+        +vector_stores.json
+    }
+
+    VectorStoreManager --> OpenAIAPI
+    VectorStoreManager --> ConfigFile
+    ModernRAGManager --> VectorStoreManager
     StreamlitUI --> SessionState
-    ModernRAGManager --> VectorStores
+    StreamlitUI --> VectorStoreManager
     StreamlitUI --> ModernRAGManager
 ```
 
-### 📋 データフロー
+### 📋 データフロー（重複問題解決版）
 
 ```mermaid
 graph TD
-    A["User Input Query"] --> B["ModernRAGManager"]
-    B --> C["OpenAI Responses API"]
-    C --> D["file_search Tool"]
-    D --> E["Vector Store Search"]
-    E --> F["Knowledge Retrieval"]
-    F --> G["Response Generation"]
-    G --> H["Citation Extraction"]
-    H --> I["Result Processing"]
-    I --> J["Streamlit Display"]
-    J --> K["Session History Update"]
+    A["User Query"] --> B["VectorStoreManager"]
+    B --> C["Check Cache"]
+    C --> D{"Cache Valid?"}
+    D -->|No| E["Fetch from OpenAI API"]
+    D -->|Yes| F["Use Cached Data"]
+    E --> G["Sort by Created Time DESC"]
+    G --> H["Group by Store Name"]
+    H --> I["Select Latest ID per Name"]
+    I --> J["Update Cache"]
+    F --> K["Get Selected Store ID"]
+    J --> K
+    K --> L["ModernRAGManager"]
+    L --> M["OpenAI Responses API"]
+    M --> N["file_search Tool"]
+    N --> O["Vector Store Search"]
+    O --> P["Knowledge Retrieval"]
+    P --> Q["Response Generation"]
+    Q --> R["Citation Extraction"]
+    R --> S["Result Processing"]
+    S --> T["Streamlit Display"]
+    T --> U["Session History Update"]
 ```
 
 ---
 
 ## 📋 関数一覧
 
-### 🏗️ 初期化・設定関数
+### 🆕 VectorStoreManager関連
 
+| 関数名                              | 分類          | 処理概要                        | 重要度 |
+| ----------------------------------- | ------------- | ------------------------------- | ------ |
+| `VectorStoreManager.__init__()`     | 🏗️ 初期化   | Vector Store管理初期化          | ⭐⭐⭐ |
+| `load_vector_stores()`              | 📁 設定      | 設定ファイル読み込み            | ⭐⭐⭐ |
+| `save_vector_stores()`              | 💾 設定      | 設定ファイル保存                | ⭐⭐⭐ |
+| `fetch_latest_vector_stores()`      | 🔄 API       | 最新Vector Store取得・重複解決  | ⭐⭐⭐ |
+| `get_vector_stores()`               | 🎯 統合      | キャッシュ付きVector Store取得  | ⭐⭐⭐ |
+| `refresh_and_save()`                | 🔄 更新      | 強制更新・保存実行              | ⭐⭐⭐ |
+| `debug_vector_stores()`             | 🐛 デバッグ  | デバッグ情報取得                | ⭐⭐   |
+
+### 🏗️ 初期化・設定関数
 
 | 関数名                       | 分類          | 処理概要                        | 重要度 |
 | ---------------------------- | ------------- | ------------------------------- | ------ |
 | `initialize_session_state()` | 🔧 初期化     | Streamlitセッション状態初期化   | ⭐⭐⭐ |
+| `get_vector_store_manager()` | 🏭 ファクトリ | Vector Store Managerシングルトン | ⭐⭐⭐ |
 | `get_rag_manager()`          | 🏭 ファクトリ | RAGマネージャーシングルトン取得 | ⭐⭐⭐ |
-| `get_selected_store_index()` | 🔍 検索       | Vector Storeインデックス取得    | ⭐⭐   |
+| `get_current_vector_stores()` | 🔍 検索       | 現在のVector Store設定取得      | ⭐⭐⭐ |
 
 ### 🤖 RAG処理関数
-
 
 | 関数名                        | 分類        | 処理概要              | 重要度 |
 | ----------------------------- | ----------- | --------------------- | ------ |
@@ -166,7 +216,6 @@ graph TD
 
 ### 🔧 データ抽出関数
 
-
 | 関数名                     | 分類    | 処理概要               | 重要度 |
 | -------------------------- | ------- | ---------------------- | ------ |
 | `_extract_response_text()` | 📝 抽出 | レスポンステキスト抽出 | ⭐⭐⭐ |
@@ -175,17 +224,16 @@ graph TD
 
 ### 🎨 UI表示関数
 
-
-| 関数名                     | 分類      | 処理概要           | 重要度 |
-| -------------------------- | --------- | ------------------ | ------ |
-| `display_search_history()` | 📊 履歴   | 検索履歴表示       | ⭐⭐   |
-| `display_test_questions()` | 💡 質問   | テスト質問表示     | ⭐⭐   |
-| `display_system_info()`    | ℹ️ 情報 | システム情報表示   | ⭐     |
-| `display_search_options()` | ⚙️ 設定 | 検索オプション表示 | ⭐⭐   |
-| `display_search_results()` | 📈 結果   | 検索結果表示       | ⭐⭐⭐ |
+| 関数名                           | 分類        | 処理概要                   | 重要度 |
+| -------------------------------- | ----------- | -------------------------- | ------ |
+| `display_search_history()`       | 📊 履歴     | 検索履歴表示               | ⭐⭐   |
+| `display_test_questions()`       | 💡 質問     | テスト質問表示             | ⭐⭐   |
+| `display_system_info()`          | ℹ️ 情報    | システム情報表示           | ⭐     |
+| `display_search_options()`       | ⚙️ 設定   | 検索オプション表示         | ⭐⭐   |
+| `display_search_results()`       | 📈 結果     | 検索結果表示               | ⭐⭐⭐ |
+| `display_vector_store_management()` | 🗄️ 管理 | Vector Store管理UI表示     | ⭐⭐⭐ |
 
 ### 🎯 メイン制御関数
-
 
 | 関数名   | 分類    | 処理概要                   | 重要度 |
 | -------- | ------- | -------------------------- | ------ |
@@ -195,473 +243,351 @@ graph TD
 
 ## 📑 関数詳細設計
 
-### 🤖 ModernRAGManager.**init**()
+### 🆕 VectorStoreManager.\_\_init\_\_()
 
 #### 🎯 処理概要
 
-RAGマネージャーの初期化とAgent SDKセッション辞書の準備
+Vector Store管理システムの初期化。OpenAIクライアントとキャッシュシステムの準備。
 
 #### 📊 処理の流れ
 
 ```mermaid
 graph TD
-    A["Function Start"] --> B["Initialize agent_sessions dict"]
-    B --> C["Set empty dictionary"]
-    C --> D["Ready for RAG operations"]
+    A["Function Start"] --> B["Set OpenAI Client"]
+    B --> C["Initialize Cache Dict"]
+    C --> D["Set Last Update to None"]
+    D --> E["Ready for Vector Store Management"]
 ```
 
 #### 📋 IPO設計
 
-
-| 項目        | 内容                                 |
-| ----------- | ------------------------------------ |
-| **INPUT**   | なし                                 |
-| **PROCESS** | Agent SDK用セッション辞書の初期化    |
-| **OUTPUT**  | なし（副作用：インスタンス状態設定） |
-
----
-
-### 🔍 ModernRAGManager.search\_with\_responses\_api()
-
-#### 🎯 処理概要
-
-OpenAI Responses API + file\_searchツールによる高精度Vector Store検索
-
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B["Get Vector Store ID"]
-    B --> C["Configure file_search Tool"]
-    C --> D["Set Search Options"]
-    D --> E["Call Responses API"]
-    E --> F["Extract Response Text"]
-    F --> G["Extract Citations"]
-    G --> H["Build Metadata"]
-    H --> I["Return Results & Metadata"]
-  
-    E --> J{"API Error?"}
-    J -->|Yes| K["Error Handling"]
-    K --> L["Return Error Result"]
-    J -->|No| F
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                                     |
-| ----------- | -------------------------------------------------------- |
-| **INPUT**   | `query: str`,`store_name: str`,`**kwargs`                |
-| **PROCESS** | API呼び出し → レスポンス処理 → メタデータ構築          |
-| **OUTPUT**  | `Tuple[str, Dict[str, Any]]`- (回答テキスト, メタデータ) |
-
-#### 🔧 file\_searchツール設定
-
-```python
-file_search_tool_dict = {
-    "type": "file_search",
-    "vector_store_ids": [store_id],
-    "max_num_results": max_results,  # オプション
-    "filters": filters               # オプション
-}
-```
-
-#### 📊 生成されるメタデータ例
-
-```json
-{
-    "store_name": "Medical Q&A",
-    "store_id": "vs_687a060f9ed881918b213bfdeab8241b",
-    "query": "What are symptoms of diabetes?",
-    "timestamp": "2025-01-17T10:30:45",
-    "model": "gpt-4o-mini",
-    "method": "responses_api_file_search",
-    "citations": [
-        {
-            "file_id": "file_abc123",
-            "filename": "medical_qa.txt",
-            "index": 0
-        }
-    ],
-    "usage": {
-        "prompt_tokens": 150,
-        "completion_tokens": 300,
-        "total_tokens": 450
-    }
-}
-```
+| 項目        | 内容                                           |
+| ----------- | ---------------------------------------------- |
+| **INPUT**   | `openai_client: OpenAI = None`                 |
+| **PROCESS** | クライアント設定 → キャッシュ初期化            |
+| **OUTPUT**  | なし（副作用：インスタンス状態設定）           |
 
 ---
 
-### 🤖 ModernRAGManager.search\_with\_agent\_sdk()
+### 🔄 VectorStoreManager.fetch\_latest\_vector\_stores()
 
 #### 🎯 処理概要
 
-Agent SDKによるセッション管理付き検索（簡易版実装）
+OpenAI APIから最新のVector Store一覧を取得し、重複問題を解決する中核機能。
 
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B{"Agent SDK Available?"}
-    B -->|No| C["Fallback to Responses API"]
-    B -->|Yes| D["Get/Create Session"]
-    D --> E["Create Simple Agent"]
-    E --> F["Run Agent with Session"]
-    F --> G["Extract Result"]
-    G --> H["Build Metadata"]
-    H --> I["Return Result"]
-  
-    C --> J["Call Responses API Method"]
-    J --> I
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                                     |
-| ----------- | -------------------------------------------------------- |
-| **INPUT**   | `query: str`,`store_name: str`                           |
-| **PROCESS** | セッション管理 → Agent実行 → 結果抽出                  |
-| **OUTPUT**  | `Tuple[str, Dict[str, Any]]`- (回答テキスト, メタデータ) |
-
-#### ⚠️ 注意点
-
-* 現在は簡易版実装
-* 実際のRAG機能はResponses APIに委譲
-* セッション管理の利点のみ提供
-
----
-
-### 🎯 ModernRAGManager.search()
-
-#### 🎯 処理概要
-
-統合検索メソッド（Responses API / Agent SDK の選択実行）
-
-#### 📊 処理の流れ
+#### 📊 処理の流れ（重複問題修正版）
 
 ```mermaid
 graph TD
-    A["Function Start"] --> B{"use_agent_sdk & Available?"}
-    B -->|Yes| C["Call Agent SDK Search"]
-    B -->|No| D["Call Responses API Search"]
-    C --> E["Return Result"]
-    D --> E
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                                            |
-| ----------- | --------------------------------------------------------------- |
-| **INPUT**   | `query: str`,`store_name: str`,`use_agent_sdk: bool`,`**kwargs` |
-| **PROCESS** | 検索方法選択 → 該当メソッド実行                                |
-| **OUTPUT**  | `Tuple[str, Dict[str, Any]]`- (回答テキスト, メタデータ)        |
-
----
-
-### 📝 ModernRAGManager.\_extract\_response\_text()
-
-#### 🎯 処理概要
-
-OpenAI Responses APIレスポンスからテキスト部分を安全に抽出
-
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B{"output_text Attribute?"}
-    B -->|Yes| C["Return output_text"]
-    B -->|No| D{"output Array?"}
-    D -->|Yes| E["Iterate output Items"]
-    E --> F{"item.type == message?"}
-    F -->|Yes| G["Check content Array"]
-    G --> H{"content.type == output_text?"}
-    H -->|Yes| I["Return content.text"]
-    H -->|No| E
-    F -->|No| E
-    D -->|No| J["Return Error Message"]
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                                   |
-| ----------- | ------------------------------------------------------ |
-| **INPUT**   | `response`- OpenAI Responses APIレスポンスオブジェクト |
-| **PROCESS** | レスポンス構造解析 → テキスト抽出                     |
-| **OUTPUT**  | `str`- 抽出されたレスポンステキスト                    |
-
----
-
-### 📚 ModernRAGManager.\_extract\_citations()
-
-#### 🎯 処理概要
-
-レスポンスからファイル引用情報を抽出してリスト化
-
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B["Initialize citations list"]
-    B --> C{"response.output exists?"}
-    C -->|Yes| D["Iterate output items"]
-    D --> E{"item.type == message?"}
-    E -->|Yes| F["Check content annotations"]
-    F --> G{"annotation.type == file_citation?"}
-    G -->|Yes| H["Extract citation info"]
-    H --> I["Add to citations list"]
-    G -->|No| F
-    E -->|No| D
-    C -->|No| J["Return empty list"]
-    I --> J
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                                   |
-| ----------- | ------------------------------------------------------ |
-| **INPUT**   | `response`- OpenAI Responses APIレスポンスオブジェクト |
-| **PROCESS** | アノテーション解析 → ファイル引用抽出                 |
-| **OUTPUT**  | `List[Dict[str, Any]]`- 引用情報リスト                 |
-
-#### 📄 引用情報構造
-
-```python
-citation_example = {
-    "file_id": "file_abc123def456",
-    "filename": "medical_qa.txt", 
-    "index": 0
-}
-```
-
----
-
-### 🎨 display\_search\_results()
-
-#### 🎯 処理概要
-
-検索結果の包括的表示（回答・引用・メタデータ）
-
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B["Display Response Text"]
-    B --> C{"Citations Available & Show Option?"}
-    C -->|Yes| D["Display Citations Section"]
-    C -->|No| E["Display Metadata Section"]
-    D --> E
-    E --> F["Display Store Info"]
-    F --> G["Display Technical Details"]
-    G --> H["Display Detailed JSON"]
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                            |
-| ----------- | ----------------------------------------------- |
-| **INPUT**   | `response_text: str`,`metadata: Dict[str, Any]` |
-| **PROCESS** | Streamlit UI要素生成 → 段階的情報表示          |
-| **OUTPUT**  | なし（副作用：UI表示）                          |
-
-#### 🎨 表示セクション
-
-
-| セクション          | 内容                           |
-| ------------------- | ------------------------------ |
-| **🤖 回答**         | AI生成レスポンステキスト       |
-| **📚 引用ファイル** | 参照されたファイル一覧         |
-| **📊 検索情報**     | Vector Store・モデル・実行時間 |
-| **🔍 詳細情報**     | 完全なメタデータJSON           |
-
----
-
-### 💡 display\_test\_questions()
-
-#### 🎯 処理概要
-
-選択されたVector Storeと言語に応じたテスト質問の動的表示
-
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B["Get Selected Store & Language"]
-    B --> C["Calculate Store Index"]
-    C --> D{"Language == English?"}
-    D -->|Yes| E["Use English Questions"]
-    D -->|No| F["Use Japanese Questions"]
-    E --> G["Get Questions by Index"]
-    F --> G
-    G --> H{"Questions Available?"}
-    H -->|Yes| I["Display Question Buttons"]
-    H -->|No| J["Display No Questions Message"]
-    I --> K["Handle Button Clicks"]
-    K --> L["Update Session State"]
-```
-
-#### 📋 IPO設計
-
-
-| 項目        | 内容                                              |
-| ----------- | ------------------------------------------------- |
-| **INPUT**   | なし（セッション状態から取得）                    |
-| **PROCESS** | Store・言語マッピング → 質問表示 → クリック処理 |
-| **OUTPUT**  | なし（副作用：UI表示・セッション更新）            |
-
-#### 🌐 質問マッピング
-
-```python
-# Vector Store対応表
-VECTOR_STORE_LIST = [
-    "Customer Support FAQ",      # index: 0
-    "Science & Technology Q&A",  # index: 1  
-    "Medical Q&A",               # index: 2
-    "Legal Q&A"                  # index: 3
-]
-
-# 質問配列（言語別）
-test_q_en[store_index]  # 英語質問
-test_q_ja[store_index]  # 日本語質問
-```
-
----
-
-### 🔧 initialize\_session\_state()
-
-#### 🎯 処理概要
-
-Streamlitセッション状態の安全な初期化とデフォルト値設定
-
-#### 📊 処理の流れ
-
-```mermaid
-graph TD
-    A["Function Start"] --> B{"search_history exists?"}
-    B -->|No| C["Initialize empty list"]
-    B -->|Yes| D{"current_query exists?"}
-    C --> D
-    D -->|No| E["Initialize empty string"]
-    D -->|Yes| F{"selected_store exists?"}
-    E --> F
-    F -->|No| G["Set default store"]
-    F -->|Yes| H{"selected_language exists?"}
-    G --> H
-    H -->|No| I["Set default language"]
-    H -->|Yes| J{"search_options exists?"}
-    I --> J
-    J -->|No| K["Set default options"]
-    J -->|Yes| L["Initialization Complete"]
+    A["Function Start"] --> B["Fetch Vector Stores from API"]
+    B --> C["Sort by Created Time DESC"]
+    C --> D["Initialize Store Candidates Dict"]
+    D --> E["Iterate Each Store"]
+    E --> F["Match with Known Patterns"]
+    F --> G{"Exact Match?"}
+    G -->|Yes| H["Set Display Name"]
+    G -->|No| I["Check Partial Match"]
+    I --> J{"Partial Match?"}
+    J -->|Yes| H
+    J -->|No| K["Use Store Name as Display"]
+    H --> L{"Already in Candidates?"}
     K --> L
+    L -->|No| M["Add as New Candidate"]
+    L -->|Yes| N["Compare Created Time"]
+    N --> O{"Newer than Existing?"}
+    O -->|Yes| P["Replace with Newer"]
+    O -->|No| Q["Keep Existing"]
+    M --> R["Continue Loop"]
+    P --> R
+    Q --> R
+    R --> S{"More Stores?"}
+    S -->|Yes| E
+    S -->|No| T["Build Final API Stores"]
+    T --> U["Return Deduplicated Stores"]
 ```
 
 #### 📋 IPO設計
 
+| 項目        | 内容                                                   |
+| ----------- | ------------------------------------------------------ |
+| **INPUT**   | なし（OpenAI API呼び出し）                             |
+| **PROCESS** | API取得 → 日時ソート → 重複解決 → 最新優先選択      |
+| **OUTPUT**  | `Dict[str, str]` - (表示名: Vector Store ID)          |
 
-| 項目        | 内容                                     |
-| ----------- | ---------------------------------------- |
-| **INPUT**   | なし                                     |
-| **PROCESS** | セッション状態存在確認 → 未存在時初期化 |
-| **OUTPUT**  | なし（副作用：`st.session_state`更新）   |
-
-#### ⚙️ デフォルト値
+#### 🔧 重複解決ロジック
 
 ```python
-default_values = {
-    "search_history": [],
-    "current_query": "",
-    "selected_store": "Customer Support FAQ",
-    "selected_language": "English",  # RAGデータ最適化
-    "use_agent_sdk": False,
-    "search_options": {
-        "max_results": 20,
-        "include_results": True,
-        "show_citations": True
+# 重複解決の具体例
+candidates = {
+    "Medical Q&A": {
+        'id': 'vs_new123',
+        'name': 'Medical Q&A Knowledge Base',
+        'created_at': 1705567890  # 新しい
     }
+    # 古いID 'vs_old456' は除外される
+}
+```
+
+#### 📊 マッピング例
+
+```python
+STORE_NAME_MAPPING = {
+    "customer_support_faq": "Customer Support FAQ Knowledge Base",
+    "medical_qa": "Medical Q&A Knowledge Base",
+    "sciq_qa": "Science & Technology Q&A Knowledge Base",
+    "legal_qa": "Legal Q&A Knowledge Base"
+}
+
+DISPLAY_NAME_MAPPING = {
+    "Customer Support FAQ Knowledge Base": "Customer Support FAQ",
+    "Medical Q&A Knowledge Base": "Medical Q&A",
+    "Science & Technology Q&A Knowledge Base": "Science & Technology Q&A",
+    "Legal Q&A Knowledge Base": "Legal Q&A"
 }
 ```
 
 ---
 
-### 🎯 main()
+### 🎯 VectorStoreManager.get\_vector\_stores()
 
 #### 🎯 処理概要
 
-RAG検索アプリケーション全体のオーケストレーション
+キャッシュ機能付きVector Store取得。5分間のキャッシュ有効期限管理。
 
 #### 📊 処理の流れ
 
 ```mermaid
 graph TD
-    A["App Start"] --> B["Set Page Config"]
-    B --> C["Initialize Session State"]
-    C --> D["Get RAG Manager"]
-    D --> E["Display Header & Status"]
-    E --> F["Setup Sidebar Configuration"]
-  
-    F --> G["Vector Store Selection"]
-    G --> H["Language Selection"]
-    H --> I["Search Options Setup"]
-    I --> J["System Info Display"]
-  
-    J --> K["Main Content Layout"]
-    K --> L["Query Input Form"]
-    L --> M{"Query Submitted?"}
-  
-    M -->|Yes| N["Execute RAG Search"]
-    M -->|No| O["Display Default Info"]
-  
-    N --> P["Display Search Results"]
-    P --> Q["Update Search History"]
-  
-    O --> R["Display Search History"]
-    Q --> R
-    R --> S["Display Footer"]
-    S --> T["App Ready for Next Query"]
+    A["Function Start"] --> B{"Force Refresh?"}
+    B -->|Yes| C["Clear Cache"]
+    B -->|No| D{"Cache Exists?"}
+    C --> E["Fetch Latest Stores"]
+    D -->|No| E
+    D -->|Yes| F["Check Cache Age"]
+    F --> G{"Cache Valid (< 5min)?"}
+    G -->|Yes| H["Return Cached Data"]
+    G -->|No| E
+    E --> I{"Auto Refresh Enabled?"}
+    I -->|Yes| J["Call API Fetch"]
+    I -->|No| K["Load from Config File"]
+    J --> L["Update Cache"]
+    K --> L
+    L --> M["Return Vector Stores"]
+    H --> M
 ```
 
 #### 📋 IPO設計
 
+| 項目        | 内容                                                   |
+| ----------- | ------------------------------------------------------ |
+| **INPUT**   | `force_refresh: bool = False`                          |
+| **PROCESS** | キャッシュ確認 → 有効期限チェック → データ取得・更新 |
+| **OUTPUT**  | `Dict[str, str]` - (表示名: Vector Store ID)          |
+
+---
+
+### 🔄 VectorStoreManager.refresh\_and\_save()
+
+#### 🎯 処理概要
+
+最新のVector Store情報を強制取得し、設定ファイルに保存する管理機能。
+
+#### 📊 処理の流れ
+
+```mermaid
+graph TD
+    A["Function Start"] --> B{"OpenAI Client Available?"}
+    B -->|No| C["Display Error & Return"]
+    B -->|Yes| D["Clear Cache"]
+    D --> E["Force Refresh Vector Stores"]
+    E --> F["Save to Config File"]
+    F --> G{"Save Successful?"}
+    G -->|Yes| H["Display Success Message"]
+    G -->|No| I["Display Error Message"]
+    H --> J["Show Updated Store List"]
+    J --> K["Return Updated Stores"]
+    I --> L["Return Fallback Stores"]
+```
+
+#### 📋 IPO設計
+
+| 項目        | 内容                                                     |
+| ----------- | -------------------------------------------------------- |
+| **INPUT**   | なし                                                     |
+| **PROCESS** | 強制更新 → 設定保存 → UI通知 → 結果表示              |
+| **OUTPUT**  | `Dict[str, str]` - 更新されたVector Store設定           |
+
+---
+
+### 🐛 VectorStoreManager.debug\_vector\_stores()
+
+#### 🎯 処理概要
+
+Vector Store管理の詳細な内部状態をデバッグ用に出力。
+
+#### 📊 処理の流れ
+
+```mermaid
+graph TD
+    A["Function Start"] --> B["Check Config File Exists"]
+    B --> C["Get Cached Stores"]
+    C --> D["Get Last Update Time"]
+    D --> E{"OpenAI Client Available?"}
+    E -->|Yes| F["Fetch API Stores Details"]
+    E -->|No| G["Set API Error"]
+    F --> H["Extract Store Metadata"]
+    G --> I["Build Debug Info Dict"]
+    H --> I
+    I --> J["Return Debug Info"]
+```
+
+#### 📋 IPO設計
 
 | 項目        | 内容                                               |
 | ----------- | -------------------------------------------------- |
-| **INPUT**   | なし（Streamlitアプリとして起動）                  |
-| **PROCESS** | 全体UI構築 → 設定管理 → 検索実行制御 → 結果表示 |
-| **OUTPUT**  | なし（副作用：Streamlit Webアプリ表示）            |
+| **INPUT**   | なし                                               |
+| **PROCESS** | 内部状態収集 → API詳細取得 → デバッグ情報構築   |
+| **OUTPUT**  | `Dict[str, Any]` - 包括的なデバッグ情報           |
 
-#### 🎨 UIレイアウト
+#### 📊 デバッグ情報例
+
+```json
+{
+    "config_file_exists": true,
+    "cached_stores": {
+        "Medical Q&A": "vs_687a060f9ed881918b213bfdeab8241b"
+    },
+    "last_update": "2025-01-17T10:30:45",
+    "api_stores": {
+        "Medical Q&A Knowledge Base": {
+            "id": "vs_687a060f9ed881918b213bfde",
+            "created_at": 1705567890,
+            "file_counts": {"completed": 5, "total": 5},
+            "usage_bytes": 1024000
+        }
+    }
+}
+```
+
+---
+
+### 🗄️ display\_vector\_store\_management()
+
+#### 🎯 処理概要
+
+Vector Store管理用のStreamlit UI。更新、デバッグ、設定表示機能。
+
+#### 📊 処理の流れ
+
+```mermaid
+graph TD
+    A["Function Start"] --> B["Display Header"]
+    B --> C["Get Vector Store Manager"]
+    C --> D["Show Config File Status"]
+    D --> E["Display Operation Buttons"]
+    E --> F{"Refresh Button Clicked?"}
+    F -->|Yes| G["Execute Refresh & Save"]
+    F -->|No| H{"Debug Button Clicked?"}
+    G --> I["Clear Cache & Rerun"]
+    H -->|Yes| J["Show Debug Info"]
+    H -->|No| K{"Config Button Clicked?"}
+    J --> L["Display JSON Debug Data"]
+    K -->|Yes| M["Show Config File Content"]
+    K -->|No| N["Wait for User Action"]
+    M --> O["Display File Content as Code"]
+    L --> N
+    O --> N
+    I --> N
+```
+
+#### 📋 IPO設計
+
+| 項目        | 内容                                           |
+| ----------- | ---------------------------------------------- |
+| **INPUT**   | なし（Streamlit session state）               |
+| **PROCESS** | UI構築 → ボタン処理 → 管理機能実行           |
+| **OUTPUT**  | なし（副作用：UI表示・状態更新）               |
+
+---
+
+### 🎯 get\_current\_vector\_stores()
+
+#### 🎯 処理概要
+
+現在のVector Store設定を取得し、UI用のリスト形式も提供する統合関数。
+
+#### 📊 処理の流れ
+
+```mermaid
+graph TD
+    A["Function Start"] --> B["Get Vector Store Manager"]
+    B --> C["Call get_vector_stores()"]
+    C --> D["Extract Store Names List"]
+    D --> E["Return Stores Dict & List"]
+```
+
+#### 📋 IPO設計
+
+| 項目        | 内容                                                                 |
+| ----------- | -------------------------------------------------------------------- |
+| **INPUT**   | `force_refresh: bool = False`                                        |
+| **PROCESS** | Manager取得 → Vector Store取得 → リスト変換                        |
+| **OUTPUT**  | `Tuple[Dict[str, str], List[str]]` - (Stores辞書, Store名リスト)    |
+
+---
+
+### 🔧 get\_test\_questions\_by\_store()
+
+#### 🎯 処理概要
+
+選択されたVector Storeと言語に応じて、動的にテスト質問を取得する改修版関数。
+
+#### 📊 処理の流れ
+
+```mermaid
+graph TD
+    A["Function Start"] --> B["Build Question Mapping Key"]
+    B --> C{"Exact Match Found?"}
+    C -->|Yes| D["Return Matched Questions"]
+    C -->|No| E["Try Partial Match"]
+    E --> F{"Partial Match Found?"}
+    F -->|Yes| G["Return Partial Match Questions"]
+    F -->|No| H["Return Default Questions"]
+    D --> I["Return Question List"]
+    G --> I
+    H --> I
+```
+
+#### 📋 IPO設計
+
+| 項目        | 内容                                                     |
+| ----------- | -------------------------------------------------------- |
+| **INPUT**   | `store_name: str`, `language: str`                       |
+| **PROCESS** | 動的マッピング → 部分一致 → デフォルト処理             |
+| **OUTPUT**  | `List[str]` - 対応するテスト質問リスト                   |
+
+#### 🌐 動的マッピング例
 
 ```python
-# サイドバー構成
-sidebar_sections = [
-    "Vector Store Selection",
-    "Language Selection", 
-    "Search Options",
-    "System Information",
-    "Test Questions"
-]
+store_question_mapping = {
+    ("Customer Support FAQ", "English"): test_questions_en,
+    ("Medical Q&A", "English"): test_questions_3_en,
+    ("Science & Technology Q&A", "English"): test_questions_2_en,
+    ("Legal Q&A", "English"): test_questions_4_en,
+    # 日本語版
+    ("Customer Support FAQ", "日本語"): test_questions_ja,
+    ("Medical Q&A", "日本語"): test_questions_3_ja,
+}
 
-# メインコンテンツ構成
-main_sections = [
-    "Header & API Status",
-    "Query Input Form", 
-    "Search Results Display",
-    "Search History",
-    "Footer Information"
-]
+# 部分一致の例
+# "Medical Q&A Knowledge Base" → "Medical Q&A"
 ```
 
 ---
 
 ## ⚙️ 技術仕様
 
-### 📦 依存ライブラリ
-
+### 📦 依存ライブラリ（改修版）
 
 | ライブラリ      | バージョン | 用途                         | 重要度 |
 | --------------- | ---------- | ---------------------------- | ------ |
@@ -674,34 +600,68 @@ main_sections = [
 | `json`          | 標準       | 📄 JSON処理                  | ⭐⭐   |
 | `pathlib`       | 標準       | 📁 パス操作                  | ⭐     |
 
-### 🗃️ Vector Store設定
+### 🗄️ Vector Store動的管理システム
 
-#### 📊 登録Vector Store
+#### 📊 設定ファイル構造（vector_stores.json）
 
-```yaml
-Vector_Stores:
-  Customer Support FAQ:
-    id: "vs_687a0604f1508191aaf416d88e266ab7"
-    description: "カスタマーサポート・FAQ知識ベース"
-    optimal_language: "英語"
-  
-  Science & Technology QA:
-    id: "vs_687a061acc908191af7d5d9ba623470b"
-    description: "科学技術質問回答知識ベース"
-    optimal_language: "英語"
-  
-  Medical QA:
-    id: "vs_687a060f9ed881918b213bfdeab8241b"
-    description: "医療質問回答知識ベース" 
-    optimal_language: "英語"
-  
-  Legal QA:
-    id: "vs_687a062418ec8191872efdbf8f554836"
-    description: "法律質問回答知識ベース"
-    optimal_language: "英語"
+```json
+{
+    "vector_stores": {
+        "Customer Support FAQ": "vs_687a0604f1508191aaf416d88e266ab7",
+        "Medical Q&A": "vs_687a060f9ed881918b213bfdeab8241b",
+        "Science & Technology Q&A": "vs_687a061acc908191af7d5d9ba623470b",
+        "Legal Q&A": "vs_687a062418ec8191872efdbf8f554836"
+    },
+    "last_updated": "2025-01-17T10:30:45.123456",
+    "source": "a30_30_rag_search.py",
+    "version": "1.1"
+}
 ```
 
-### 🔧 API設定パラメータ
+#### 🔄 重複解決アルゴリズム
+
+```mermaid
+graph LR
+    A["API Response"] --> B["Sort by created_at DESC"]
+    B --> C["Group by Display Name"]
+    C --> D["Select First (Latest) from Each Group"]
+    D --> E["Build Final Mapping"]
+
+    F["Before: vs_old123 (2024-01-01)"] --> G["After: vs_new456 (2025-01-17)"]
+    F --> H["Same Display Name 'Medical Q&A'"]
+    G --> H
+    H --> I["Latest ID Selected: vs_new456"]
+```
+
+#### 🏭 VectorStoreManagerの設定
+
+```python
+# デフォルトVector Store（フォールバック用）
+DEFAULT_VECTOR_STORES = {
+    "Customer Support FAQ": "vs_687a0604f1508191aaf416d88e266ab7",
+    "Science & Technology Q&A": "vs_687a061acc908191af7d5d9ba623470b",
+    "Medical Q&A": "vs_687a060f9ed881918b213bfdeab8241b",
+    "Legal Q&A": "vs_687a062418ec8191872efdbf8f554836"
+}
+
+# a30_020_make_vsid.py との連携マッピング
+STORE_NAME_MAPPING = {
+    "customer_support_faq": "Customer Support FAQ Knowledge Base",
+    "medical_qa": "Medical Q&A Knowledge Base",
+    "sciq_qa": "Science & Technology Q&A Knowledge Base",
+    "legal_qa": "Legal Q&A Knowledge Base"
+}
+
+# UI表示用の逆マッピング
+DISPLAY_NAME_MAPPING = {
+    "Customer Support FAQ Knowledge Base": "Customer Support FAQ",
+    "Medical Q&A Knowledge Base": "Medical Q&A",
+    "Science & Technology Q&A Knowledge Base": "Science & Technology Q&A",
+    "Legal Q&A Knowledge Base": "Legal Q&A"
+}
+```
+
+### 🔧 API設定パラメータ（改修版）
 
 #### 🤖 Responses API設定
 
@@ -710,9 +670,9 @@ responses_api_config = {
     "model": "gpt-4o-mini",
     "tools": [{
         "type": "file_search",
-        "vector_store_ids": ["vs_xxx..."],
-        "max_num_results": 20,     # 可変
-        "filters": None            # オプション
+        "vector_store_ids": ["vs_xxx..."],  # 動的に取得
+        "max_num_results": 20,              # カスタマイズ可能
+        "filters": None                     # オプション
     }],
     "include": ["file_search_call.results"],
     "timeout": 30,
@@ -720,73 +680,35 @@ responses_api_config = {
 }
 ```
 
-#### 🤖 Agent SDK設定
+### 📊 検索オプション（改修版）
 
-```python
-agent_config = {
-    "name": "RAG_Agent_{store_name}",
-    "model": "gpt-4o-mini", 
-    "instructions": "専門分野特化指示",
-    "session_type": "SQLiteSession",
-    "session_management": True
-}
-```
+| オプション              | デフォルト値 | 説明                           |
+| ----------------------- | ------------ | ------------------------------ |
+| **max\_results**        | 20           | Vector Store検索最大結果数     |
+| **include\_results**    | True         | file\_search\_call.results含有 |
+| **show\_citations**     | True         | ファイル引用表示               |
+| **use\_agent\_sdk**     | False        | Agent SDK使用フラグ            |
+| **auto\_refresh\_stores** | True         | 起動時Vector Store自動更新     |
 
-### 📊 検索オプション
-
-
-| オプション           | デフォルト値 | 説明                           |
-| -------------------- | ------------ | ------------------------------ |
-| **max\_results**     | 20           | Vector Store検索最大結果数     |
-| **include\_results** | True         | file\_search\_call.results含有 |
-| **show\_citations**  | True         | ファイル引用表示               |
-| **use\_agent\_sdk**  | False        | Agent SDK使用フラグ            |
-
-### 🌐 多言語対応
-
-#### 📝 質問言語サポート
-
-```python
-language_support = {
-    "English": {
-        "code": "en",
-        "optimization": "RAG Data Optimized",
-        "question_sets": 4,
-        "total_questions": 20
-    },
-    "日本語": {
-        "code": "ja", 
-        "optimization": "Translation Layer",
-        "question_sets": 4,
-        "total_questions": 20
-    }
-}
-```
-
-### 🔄 セッション管理
+### 🔄 セッション管理（改修版）
 
 #### 💾 セッション状態構造
 
 ```python
 session_structure = {
-    "search_history": [
-        {
-            "query": "user question",
-            "store_name": "Vector Store name",
-            "timestamp": "2025-01-17 10:30:45",
-            "method": "responses_api_file_search",
-            "citations": [{"file_id": "...", "filename": "..."}],
-            "result_preview": "first 200 chars..."
-        }
-    ],
-    "current_query": "current input",
-    "selected_store": "store name",
-    "selected_language": "language code", 
+    "search_history": [...],  # 従来通り
+    "current_query": "...",
+    "selected_store": "Medical Q&A",  # 動的に管理
+    "selected_language": "English",
     "search_options": {
         "max_results": 20,
         "include_results": True,
         "show_citations": True
-    }
+    },
+    # 新規追加
+    "auto_refresh_stores": True,
+    "vector_stores_updated": "2025-01-17T10:30:45",
+    "force_initial_refresh": False
 }
 ```
 
@@ -794,8 +716,16 @@ session_structure = {
 
 ## 🚨 エラーハンドリング
 
-### 🔑 API関連エラー
+### 🆕 Vector Store管理関連エラー
 
+| エラー種別                   | 原因                     | 対処法                         | 影響度 |
+| ---------------------------- | ------------------------ | ------------------------------ | ------ |
+| **重複Vector Store問題**     | 🔄 同名Store複数存在     | 最新作成日時優先選択・自動解決 | 🟡 中  |
+| **設定ファイル破損**         | 📁 JSON形式不正          | デフォルト値にフォールバック   | 🟡 中  |
+| **API取得失敗**              | 🌐 OpenAI API障害        | 設定ファイルから読み込み       | 🟡 中  |
+| **Vector Store ID不整合**    | 🚫 古いID・無効ID        | 最新情報に自動更新             | 🔴 高  |
+
+### 🔑 API関連エラー（継続）
 
 | エラー種別           | 原因                     | 対処法                         | 影響度 |
 | -------------------- | ------------------------ | ------------------------------ | ------ |
@@ -804,112 +734,115 @@ session_structure = {
 | **API呼び出し失敗**  | 🌐 ネットワーク・API障害 | エラーメッセージ・リトライ提案 | 🟡 中  |
 | **レート制限エラー** | ⏱️ 使用量上限到達      | 待機指示・使用量確認案内       | 🟡 中  |
 
-### 🗃️ Vector Store関連エラー
+### 🔄 重複問題解決フロー
 
+```mermaid
+graph TD
+    A["Duplicate Vector Stores Detected"] --> B["Extract Created Time"]
+    B --> C["Sort Descending by created_at"]
+    C --> D["Group by Display Name"]
+    D --> E["Select Latest from Each Group"]
+    E --> F["Update Configuration"]
+    F --> G{"Update Successful?"}
+    G -->|Yes| H["Display Success Message"]
+    G -->|No| I["Fallback to Default"]
+    H --> J["Log Selected IDs"]
+    I --> K["Log Fallback Action"]
+    J --> L["Continue Operation"]
+    K --> L
+```
 
-| エラー種別               | 原因                  | 対処法                    | 影響度 |
-| ------------------------ | --------------------- | ------------------------- | ------ |
-| **Vector Store未見つけ** | 🚫 不正なStore ID     | ID確認・再設定指示        | 🔴 高  |
-| **検索結果ゼロ**         | 🔍 該当データなし     | 質問変更提案・他Store提案 | 🟠 低  |
-| **ファイル引用取得失敗** | 📚 レスポンス構造変更 | 警告表示・機能継続        | 🟡 中  |
-
-### 🎨 UI関連エラー
-
-
-| エラー種別             | 原因              | 対処法                   | 影響度 |
-| ---------------------- | ----------------- | ------------------------ | ------ |
-| **セッション状態破損** | 💾 データ不整合   | 状態リセット・再初期化   | 🟡 中  |
-| **履歴表示エラー**     | 📊 データ形式不正 | エラースキップ・継続表示 | 🟠 低  |
-| **言語切替エラー**     | 🌐 設定不整合     | デフォルト言語復帰       | 🟠 低  |
-
-### 🤖 Agent SDK関連エラー
-
-
-| エラー種別             | 原因              | 対処法                      | 影響度 |
-| ---------------------- | ----------------- | --------------------------- | ------ |
-| **SDK未インストール**  | 📦 ライブラリ不在 | Responses APIフォールバック | 🟠 低  |
-| **セッション作成失敗** | 💾 SQLite問題     | 通常検索に切替              | 🟡 中  |
-| **Agent実行エラー**    | 🤖 Agent設定問題  | Responses APIフォールバック | 🟡 中  |
-
-### 🛠️ エラー処理フロー
+### 🛠️ エラー処理フロー（改修版）
 
 ```mermaid
 graph TD
     A["Error Occurred"] --> B{"Error Category"}
-    B -->|API| C["API Error Handler"]
-    B -->|Vector Store| D["Vector Store Error Handler"]
+    B -->|Vector Store| C["Vector Store Error Handler"]
+    B -->|API| D["API Error Handler"]
     B -->|UI| E["UI Error Handler"]
     B -->|Agent SDK| F["Agent SDK Error Handler"]
-  
-    C --> G["Display Error Message"]
-    D --> H["Suggest Alternative"]
-    E --> I["Reset State & Continue"]
-    F --> J["Fallback to Responses API"]
-  
-    G --> K["Log Error Details"]
-    H --> K
-    I --> K
-    J --> K
-  
-    K --> L{"Recovery Possible?"}
-    L -->|Yes| M["Continue Operation"]
-    L -->|No| N["Graceful Degradation"]
+
+    C --> G["Check for Duplicates"]
+    G --> H["Apply Latest ID Selection"]
+    H --> I["Update Cache & Config"]
+
+    D --> J["Display Error Message"]
+    E --> K["Reset State & Continue"]
+    F --> L["Fallback to Responses API"]
+
+    I --> M["Log Resolution Details"]
+    J --> M
+    K --> M
+    L --> M
+
+    M --> N{"Recovery Possible?"}
+    N -->|Yes| O["Continue Operation"]
+    N -->|No| P["Graceful Degradation"]
 ```
 
-### ✅ エラーメッセージ設計
+### ✅ エラーメッセージ設計（改修版）
 
-#### 🎯 適切なエラー通知
+#### 🎯 Vector Store管理エラー通知
 
 ```python
-# API設定エラー
-st.error("OpenAI API キーの設定に問題があります")
-st.error("環境変数 OPENAI_API_KEY が設定されているか確認してください")
-st.code("export OPENAI_API_KEY='your-api-key-here'")
+# 重複解決成功
+st.success("✅ Vector Store設定を更新しました（重複問題解決）")
+st.info("🔄 同名Vector Storeが検出されましたが、最新作成日時を優先して自動解決しました")
 
-# 検索エラー  
-st.warning("検索結果が見つかりませんでした。質問を変更してみてください")
-st.info("💡 他のVector Storeでの検索も試してみてください")
+# 設定ファイル問題
+st.warning("⚠️ 設定ファイル形式が不正です。デフォルト値を使用します")
+st.info("💡 「最新情報に更新」ボタンで正常な設定ファイルを再生成できます")
 
-# フォールバック通知
-st.info("Agent SDKが利用できないため、Responses APIを使用します")
+# API取得失敗
+st.error("❌ 最新情報の取得に失敗しました。設定ファイルから読み込みます")
+st.info("🔄 しばらく時間をおいて「最新情報に更新」をお試しください")
 ```
 
-#### ❌ 避けるべきエラーパターン
+#### 🔍 デバッグ支援機能
 
 ```python
-# 👎 不親切な例
-st.error("エラー")                    # 原因不明
-st.error("処理失敗")                  # 対処法なし
-st.error("internal error")         # 技術的すぎ
+# 重複解決ログ例
+logger.info("🔄 更新: 'Medical Q&A' -> 'Medical Q&A Knowledge Base' (vs_new456) [新: 1705567890 > 旧: 1705480000]")
+logger.info("✅ 新規候補: 'Legal Q&A' -> 'Legal Q&A Knowledge Base' (vs_abc123)")
+logger.info("⏭️ スキップ: 'Customer Support FAQ' -> 'Customer Support FAQ v1' (vs_old789) [新: 1705400000 <= 既存: 1705567890]")
 ```
 
 ---
 
-## 🎉 まとめ
+## 🎉 まとめ（改修版）
 
-この設計書は、**a30\_30\_rag\_search.py** の完全な技術仕様と実装詳細を網羅した包括的ドキュメントです。
+この設計書は、**重複Vector Store問題を解決**した **a30\_30\_rag\_search.py** の完全な技術仕様と実装詳細を網羅した包括的ドキュメントです。
 
-### 🌟 設計のハイライト
+### 🌟 改修のハイライト
 
-* **🤖 最新API活用**: OpenAI Responses API + file\_search の完全統合
-* **🗃️ 多重Vector Store**: 4つの専門知識ベースによる包括的検索
-* **🌐 多言語対応**: 英語最適化 + 日本語サポート
-* **📚 引用機能**: 検索結果の出典明示による信頼性向上
-* **🔒 セキュア設計**: 環境変数によるAPIキー管理
-* **🎨 直感的UI**: StreamlitによるモダンWebインターフェース
+* **🔄 重複Vector Store問題解決**: 同名Vector Storeの最新作成日時優先選択
+* **🗄️ VectorStoreManagerクラス**: 動的Vector Store管理の中核システム
+* **📁 設定ファイル連携**: vector_stores.json による永続化・キャッシュ機能
+* **🔗 a30_020_make_vsid.py連携**: 新規作成Vector Storeの自動認識
+* **🐛 デバッグ機能強化**: 詳細な内部状態確認・ログ出力
+* **⚙️ 自動更新システム**: 起動時・手動での最新情報取得
 
-### 📈 技術的特徴
+### 📈 技術的特徴（改修版）
 
-* **型安全実装**: 完全な型ヒント + エラー回避
-* **フォールバック機能**: Agent SDK → Responses API 自動切替
-* **エラー耐性**: 包括的エラーハンドリング
-* **セッション管理**: 検索履歴・設定の永続化
-* **カスタマイズ性**: 豊富な検索オプション
+* **🔧 重複解決アルゴリズム**: 作成日時ベースの自動選択
+* **💾 キャッシュシステム**: 5分間有効期限でのパフォーマンス最適化
+* **🔒 フォールバック機能**: API障害時の設定ファイル読み込み
+* **📊 UI管理機能**: サイドバーでの包括的Vector Store管理
+* **🎯 動的マッピング**: 柔軟な名前解決・部分一致対応
 
 ### 🚀 今後の拡張可能性
 
-* 🌍 多言語Vector Store対応
-* 📊 高度な分析ダッシュボード
-* 🤖 カスタムAgent作成機能
-* 🔄 バッチ検索処理
-* 📈 検索品質メトリクス
+* 🌍 多重Vector Store環境での高度な重複管理
+* 📊 Vector Store使用統計・パフォーマンス分析
+* 🤖 AI による最適Vector Store推奨機能
+* 🔄 バージョン管理・ロールバック機能
+* 📈 A/Bテスト対応Vector Store切り替え機能
+* 🔐 Vector Store アクセス権限管理
+
+### 🎯 運用上の利点
+
+* **⚡ 高信頼性**: 重複問題の完全解決により安定した検索品質
+* **🔧 メンテナンス性**: 直感的な管理UIによる運用負荷軽減
+* **📈 スケーラビリティ**: 新規Vector Store の自動認識・統合
+* **🐛 トラブルシューティング**: 詳細なデバッグ情報による迅速な問題解決
+* **🔄 継続性**: キャッシュ・フォールバック機能による高可用性
